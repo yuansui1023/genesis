@@ -7,6 +7,8 @@ It is based on current working drivers:
 - `src/genesis/instruments/sr850/driver.py`
 - `src/genesis/instruments/ami420/driver.py` (example of a controller-managed
   ramp that uses the async settle hook)
+- `src/genesis/instruments/virtual_mems/driver.py` (example of a TCP JSON Lines
+  virtual instrument with an atomic move command)
 
 ## 1) File and Module Layout
 
@@ -51,17 +53,21 @@ Recommended class methods:
    - Define user-selectable measured signals.
 
 7. `getDefaultAddress(cls) -> str`
-   - Return factory default VISA resource when known.
+   - Return factory default resource when known, e.g. a VISA resource string or
+     TCP endpoint such as `127.0.0.1:12345`.
 
 8. `getSupportedTransportKeys(cls) -> list[str]`
-   - Usually `["visa"]` unless intentionally supporting others.
+   - Usually `["visa"]` for GPIB/SCPI instruments.
+   - Use `["tcp_jsonl"]` for newline-delimited JSON TCP instruments.
 
-Optional (recommended for flaky GPIB or long ramp devices):
+Optional (recommended for flaky GPIB, TCP instruments, or long ramp devices):
 
 9. `getDefaultTransportSettings(cls) -> dict[str, Any]`
    - Returned dict is merged with per-job `"transportSettings"` and passed into
-     `VisaTransport` (`src/genesis/core/transport/visa_transport.py`).
-   - Typical keys include `visaTimeoutMs`, `writeTermination`, `readTermination`.
+     the selected transport.
+   - VISA keys include `visaTimeoutMs`, `writeTermination`, `readTermination`.
+   - TCP JSON Lines keys include `connectTimeoutSeconds` and
+     `responseTimeoutSeconds`.
 
 ## 3) Naming Conventions
 
@@ -139,7 +145,21 @@ Important implications:
 - Runtime safety uses those bounds for clamping and slew-limited stepping.
 - Keep `applyConfigValue` deterministic and idempotent; do not hide extra asynchronous behavior.
 
-Slew behavior is orchestrated outside drivers (device-agnostic), so new drivers do not need custom slew code.
+Slew behavior is orchestrated outside drivers (device-agnostic), so most new
+drivers do not need custom slew code.
+
+If a driver command must remain atomic, override:
+
+```python
+def shouldUseRuntimeSlew(self, key: str) -> bool:
+    return False if key == "targetStep" else super().shouldUseRuntimeSlew(key)
+```
+
+Genesis will still clamp numeric bounds, but will call `applyConfigValue()` once
+for that key instead of splitting the transition into multiple writes. Use this
+only when the device/API requires a single complete command, such as
+VirtualMEMS `MOVE` with `target_step`, `microstep`, and `speed` in one JSON
+object.
 
 ### 7.1) Asynchronous Settle Hook (`waitForSetpoint`)
 
@@ -303,7 +323,34 @@ Hardware checklist if errors persist:
 The AMI Model 420 driver exposes ``getDefaultTransportSettings()`` for
 reasonable magnet-ramp timeouts; merge with manual hardware checks first.
 
-## 13) Validation Checklist Before Merge
+## 13) TCP JSON Lines virtual instruments
+
+Genesis provides `tcp_jsonl` for line-delimited JSON request/response devices.
+The resource string accepts `host:port`, `tcp://host:port`, or an empty value for
+`127.0.0.1:12345`.
+
+Use this transport when a driver talks to a local or network control app rather
+than a VISA/GPIB device. The driver should:
+
+- Keep protocol-specific JSON validation and high-level methods in a reusable
+  client class.
+- Send exactly one command object for atomic operations.
+- Treat busy, disabled, timeout, malformed JSON, and unexpected responses as
+  clear exceptions.
+- Expose only meaningful high-level config fields in the GUI; for VirtualMEMS,
+  `targetStep` is sweepable while `microstep`, `moveSpeed`, and
+  `moveTimeoutSeconds` parameterize each `MOVE`.
+
+VirtualMEMS uses:
+
+```json
+{"cmd":"MOVE","target_step":100000,"microstep":16,"speed":500.0}
+```
+
+The client waits through heartbeat responses such as `{"status":"running"}` and
+returns only after `{"status":"done","success":true}`.
+
+## 14) Validation Checklist Before Merge
 
 - Driver discovered by registry automatically.
 - Config fields render correctly in Job Builder.
@@ -314,7 +361,7 @@ reasonable magnet-ramp timeouts; merge with manual hardware checks first.
 - Stop/abort and safe-state behavior works as expected.
 - No reset-heavy side effects in normal initialize path.
 
-## 14) Documentation Sync Requirement
+## 15) Documentation Sync Requirement
 
 When critical functionality changes are implemented in Genesis (especially runtime safety, sweep orchestration, plotting behavior, or driver contract expectations), documentation must be updated in the same work:
 

@@ -5,6 +5,7 @@ from collections.abc import Callable
 
 from genesis.core.transport.base_transport import BaseTransport
 from genesis.core.transport.dummy_test_transport import DummyTestTransport
+from genesis.core.transport.tcp_jsonl_transport import TcpJsonLinesTransport
 from genesis.core.transport.visa_transport import VisaTransport
 
 TransportBuilder = Callable[[str, dict[str, Any] | None], BaseTransport]
@@ -15,6 +16,10 @@ _TRANSPORT_BUILDERS: dict[str, TransportBuilder] = {
         settings=settings,
     ),
     "dummy_test": lambda resourceName, settings: DummyTestTransport(
+        resourceName=resourceName,
+        settings=settings,
+    ),
+    "tcp_jsonl": lambda resourceName, settings: TcpJsonLinesTransport(
         resourceName=resourceName,
         settings=settings,
     ),

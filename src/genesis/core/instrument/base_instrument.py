@@ -94,6 +94,18 @@ class BaseInstrument(ABC):
 
         return True
 
+    def shouldUseRuntimeSlew(self, key: str) -> bool:
+        """
+        Return whether Genesis may split numeric setpoint changes for this key
+        into multiple driver writes for software-side slew limiting.
+
+        Most instruments accept repeated setpoint writes, so the default is
+        True. Drivers whose command is intrinsically atomic can override this
+        for specific keys.
+        """
+
+        return True
+
     # ---- Job-builder / configuration metadata (no behavior lives here) ----
 
     @classmethod

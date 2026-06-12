@@ -8,6 +8,7 @@ It currently includes built-in drivers for:
 - Keysight/Agilent B29xx SMU family
 - Stanford Research SR850 lock-in amplifier
 - American Magnetics Inc. Model 420 superconducting magnet power supply programmer
+- VirtualMEMS TCP controller for the external `mems_control_app`
 
 ## Core Functionalities
 
@@ -33,6 +34,7 @@ It currently includes built-in drivers for:
   - On Windows, install a VISA runtime (for example NI-VISA) if your instrument connection requires it
   - If GPIB raises `VI_ERROR_BERR`, check cabling and address first; Genesis enables SCPI newline terminators and timeouts on `VisaTransport` by default—see the driver guide section on VISA / `transportSettings` for overrides.
   - For bus-level debugging, set `GENESIS_VISA_IO_LOG=1` or put `"visaLogIoStdout": true` under `"transportSettings"` for an instrument so `VisaTransport` prints UTC-timestamped frames to stdout with `repr()` (line endings visible as escapes).
+- VirtualMEMS requires the external `mems_control_app` TCP JSON Lines server to be running and remote control enabled. The default endpoint is `127.0.0.1:12345`.
 
 ### 2) Install
 
@@ -92,6 +94,7 @@ python -m genesis.app.main
 - If you abort a run, re-initialize before starting another sweep.
 - Heatmap pop-up is intended for larger inspection while embedded view stays compact.
 - For simulation/testing without hardware, use dummy transport paths in the runtime stack.
+- For VirtualMEMS, choose the `VirtualMEMS TCP Controller` instrument, keep the default `tcp_jsonl` transport, and set `Address / Resource` to `host:port` if the MEMS control app is not on `127.0.0.1:12345`. Sweep `targetStep`; `microstep`, `moveSpeed`, and `moveTimeoutSeconds` are included in each atomic `MOVE`.
 
 ## Project Layout (High Level)
 

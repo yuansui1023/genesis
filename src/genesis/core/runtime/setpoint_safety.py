@@ -95,6 +95,13 @@ class SetpointSafetyController:
         inst_id = str(instrument_id)
         key_str = str(key)
         target = float(self._clamp_value(inst_id, key_str, float(target_value)))
+        if not instrument.shouldUseRuntimeSlew(key_str):
+            instrument.applyConfigValue(key_str, target)
+            self.seed_last_value(inst_id, key_str, target)
+            if on_applied is not None:
+                on_applied(target)
+            return True
+
         current = self._last_numeric_value_by_ref.get((inst_id, key_str), None)
 
         if current is None:
