@@ -32,7 +32,12 @@ def loadBuiltInInstruments(registry: InstrumentRegistry) -> None:
             try:
                 driverModule = importlib.import_module(moduleName)
                 break
-            except ModuleNotFoundError:
+            except ModuleNotFoundError as exc:
+                # Only treat the driver module itself as optional. Missing
+                # imports inside a driver should surface instead of making the
+                # instrument silently disappear from the GUI.
+                if exc.name != moduleName:
+                    raise
                 continue
 
         if driverModule is None:
@@ -43,3 +48,10 @@ def loadBuiltInInstruments(registry: InstrumentRegistry) -> None:
             continue
 
         registerFn(registry)
+
+    # Keep VirtualMEMS available even if namespace package iteration behaves
+    # differently in packaged/IDE launch environments.
+    if not registry.hasInstrument("virtual_mems"):
+        from genesis.instruments.virtual_mems.driver import registerInstruments
+
+        registerInstruments(registry)
