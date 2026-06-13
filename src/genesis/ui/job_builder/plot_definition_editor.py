@@ -531,7 +531,9 @@ class PlotDefinitionEditor(QWidget):
         token = str(self.yInsertVariableCombo.currentData() or "")
         if not token:
             return
-        self._insertTokenIntoFocusedLineEdit(token)
+        self._insertTokenIntoFocusedLineEdit(
+            token, fallback=self._activeYExprLineEdit
+        )
 
     def _insertHeatmapZToken(self) -> None:
         token = str(self.zInsertVariableCombo.currentData() or "")
@@ -597,6 +599,7 @@ class PlotDefinitionEditor(QWidget):
         rowLayout = QHBoxLayout(rowWidget)
         rowLayout.setContentsMargins(0, 0, 0, 0)
         exprEdit = QLineEdit(rowWidget)
+        exprEdit.setPlaceholderText("Expression, e.g. smu:senseCurrentA")
         exprEdit.setText(expr)
         nameEdit = QLineEdit(rowWidget)
         nameEdit.setPlaceholderText("Name (optional)")
@@ -680,11 +683,15 @@ class PlotDefinitionEditor(QWidget):
         self._activeYExprLineEdit = exprEdit
         self._rememberFocusedLineEdit(exprEdit)
 
-    def _insertTokenIntoFocusedLineEdit(self, token: str) -> None:
+    def _insertTokenIntoFocusedLineEdit(
+        self, token: str, fallback: QLineEdit | None = None
+    ) -> None:
         focused = QApplication.focusWidget()
         target = (
             focused if isinstance(focused, QLineEdit) else self._lastFocusedLineEdit
         )
+        if not isinstance(target, QLineEdit):
+            target = fallback
         if not isinstance(target, QLineEdit):
             return
         target.insert(token)
