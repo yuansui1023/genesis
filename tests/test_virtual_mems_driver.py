@@ -82,7 +82,7 @@ class VirtualMEMSClientTests(unittest.TestCase):
     def test_move_waits_through_running_heartbeat(self) -> None:
         def handler(request: dict[str, Any]) -> Iterable[dict[str, Any]]:
             self.assertEqual(request["cmd"], "MOVE")
-            self.assertEqual(request["target_step"], 100000)
+            self.assertEqual(request["target_step"], 100000.123)
             self.assertEqual(request["microstep"], 16)
             self.assertEqual(request["speed"], 500.0)
             return [{"status": "running"}, {"status": "done", "success": True}]
@@ -95,9 +95,26 @@ class VirtualMEMSClientTests(unittest.TestCase):
                 move_timeout=5.0,
             )
             client.connect()
-            client.move(target_step=100000, microstep=16, speed=500.0)
+            client.move(target_step=100000.1234, microstep=16, speed=500.0)
             client.close()
             self.assertEqual(len(server.requests), 1)
+
+    def test_move_sends_integer_targets_as_ints(self) -> None:
+        def handler(request: dict[str, Any]) -> Iterable[dict[str, Any]]:
+            self.assertEqual(request["target_step"], 42)
+            self.assertIs(type(request["target_step"]), int)
+            return [{"status": "done", "success": True}]
+
+        with _FakeJsonLinesServer(handler) as server:
+            client = MEMSControlClient(
+                host=server.host,
+                port=server.port,
+                timeout=1.0,
+                move_timeout=5.0,
+            )
+            client.connect()
+            client.move(target_step=42.0, microstep=16, speed=500.0)
+            client.close()
 
     def test_move_disabled_raises_clear_error(self) -> None:
         def handler(_request: dict[str, Any]) -> Iterable[dict[str, Any]]:
@@ -141,6 +158,7 @@ class VirtualMEMSClientTests(unittest.TestCase):
     def test_driver_marks_target_step_as_atomic(self) -> None:
         fields = {field.key: field for field in VirtualMEMSInstrument.getJobConfigFields()}
         self.assertTrue(fields["targetStep"].sweepable)
+        self.assertEqual(fields["targetStep"].fieldType, "float")
         transport = _ClosedTransport()
         instrument = VirtualMEMSInstrument(name="mems", transport=transport)
         self.assertFalse(instrument.shouldUseRuntimeSlew("targetStep"))

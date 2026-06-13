@@ -90,7 +90,7 @@ class MEMSControlClient:
         self._send(
             {
                 "cmd": "MOVE",
-                "target_step": int(round(float(target_step))),
+                "target_step": self._format_target_step(target_step),
                 "microstep": int(microstep),
                 "speed": float(speed),
             }
@@ -125,6 +125,12 @@ class MEMSControlClient:
     def _request(self, payload: dict[str, Any]) -> dict[str, Any]:
         self._send(payload)
         return self._read_response()
+
+    def _format_target_step(self, target_step: float) -> int | float:
+        rounded = round(float(target_step), 3)
+        if rounded.is_integer():
+            return int(rounded)
+        return rounded
 
     def _send(self, payload: dict[str, Any]) -> None:
         try:
@@ -190,16 +196,16 @@ class VirtualMEMSInstrument(BaseInstrument):
             ConfigFieldDefinition(
                 key="targetStep",
                 label="Target Position (step)",
-                fieldType="int",
-                default=0,
+                fieldType="float",
+                default=0.0,
                 minValue=-2147483648,
                 maxValue=2147483647,
-                stepValue=1,
+                stepValue=0.001,
                 sweepable=True,
                 helpText=(
                     "Sweepable MEMS target position. Applying this field sends "
-                    "one atomic MOVE command containing target_step, microstep, "
-                    "and speed."
+                    "one atomic MOVE command containing target_step rounded to "
+                    "three decimal places, microstep, and speed."
                 ),
             ),
             ConfigFieldDefinition(
@@ -323,7 +329,7 @@ class VirtualMEMSInstrument(BaseInstrument):
             microstep=int(float(microstep)),
             speed=float(speed),
         )
-        self.jobConfig["targetStep"] = int(round(float(target_step)))
+        self.jobConfig["targetStep"] = round(float(target_step), 3)
         self.jobConfig["microstep"] = int(float(microstep))
         self.jobConfig["moveSpeed"] = float(speed)
         self.jobConfig["moveTimeoutSeconds"] = float(move_timeout_seconds)
