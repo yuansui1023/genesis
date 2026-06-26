@@ -94,7 +94,7 @@ python -m genesis.app.main
 - If you abort a run, re-initialize before starting another sweep.
 - Heatmap pop-up is intended for larger inspection while embedded view stays compact.
 - For simulation/testing without hardware, use dummy transport paths in the runtime stack.
-- For VirtualMEMS, choose the `VirtualMEMS TCP Controller` instrument, keep the default `tcp_jsonl` transport, and set `Address / Resource` to `host:port` if the MEMS control app is not on `127.0.0.1:12345`. Sweep `targetStep`; `microstep`, `moveSpeed`, and `moveTimeoutSeconds` are included in each atomic `MOVE`.
+- For VirtualMEMS, choose the `VirtualMEMS TCP Controller` instrument, keep the default `tcp_jsonl` transport, and set `Address / Resource` to `host:port` if the MEMS control app is not on `127.0.0.1:12345`. Sweep `targetStep` for MEMS angle (atomic `MOVE`) or `vzV` for bias voltage (atomic `SET_VZ`); `microstep`, `moveSpeed`, and `moveTimeoutSeconds` parameterize each `MOVE`, while `vzRampRateVPerS` (0 = immediate jump, >0 = MEMS V/s ramp) is included in each `SET_VZ`, and `moveTimeoutSeconds` also bounds remote-task waits. `MOVE` and `SET_VZ` are peer-level remote tasks—only one runs at a time, and Genesis waits for each to finish before sending the next.
 
 ## Project Layout (High Level)
 

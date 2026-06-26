@@ -159,7 +159,7 @@ Genesis will still clamp numeric bounds, but will call `applyConfigValue()` once
 for that key instead of splitting the transition into multiple writes. Use this
 only when the device/API requires a single complete command, such as
 VirtualMEMS `MOVE` with `target_step`, `microstep`, and `speed` in one JSON
-object.
+object, or VirtualMEMS `SET_VZ` with `vz_v` in one JSON object.
 
 ### 7.1) Asynchronous Settle Hook (`waitForSetpoint`)
 
@@ -338,17 +338,21 @@ than a VISA/GPIB device. The driver should:
 - Treat busy, disabled, timeout, malformed JSON, and unexpected responses as
   clear exceptions.
 - Expose only meaningful high-level config fields in the GUI; for VirtualMEMS,
-  `targetStep` is sweepable while `microstep`, `moveSpeed`, and
-  `moveTimeoutSeconds` parameterize each `MOVE`.
+  `targetStep` and `vzV` are sweepable while `microstep`, `moveSpeed`, and
+  `moveTimeoutSeconds` parameterize each `MOVE`, `vzRampRateVPerS` parameterizes
+  each `SET_VZ` ramp (zero omits `ramp_rate_v_per_s` for an immediate jump),
+  and the timeout also bounds remote-task waits.
 
-VirtualMEMS uses:
+VirtualMEMS uses peer-level remote tasks:
 
 ```json
 {"cmd":"MOVE","target_step":100000,"microstep":16,"speed":500.0}
+{"cmd":"SET_VZ","vz_v":20.0,"ramp_rate_v_per_s":5.0}
 ```
 
 The client waits through heartbeat responses such as `{"status":"running"}` and
-returns only after `{"status":"done","success":true}`.
+returns only after `{"status":"done","success":true}`. Only one remote task may
+run at a time; do not send the next control command until the previous `done`.
 
 ## 14) Validation Checklist Before Merge
 

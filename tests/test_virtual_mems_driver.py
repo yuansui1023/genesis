@@ -155,13 +155,99 @@ class VirtualMEMSClientTests(unittest.TestCase):
                 client.move(target_step=1)
             client.close()
 
+    def test_get_vz(self) -> None:
+        def handler(request: dict[str, Any]) -> Iterable[dict[str, Any]]:
+            if request["cmd"] == "GET_VZ":
+                return [{"vz_v": 20.0}]
+            raise AssertionError(request)
+
+        with _FakeJsonLinesServer(handler) as server:
+            client = MEMSControlClient(
+                host=server.host, port=server.port, timeout=1.0
+            )
+            client.connect()
+            self.assertEqual(client.get_vz(), 20.0)
+            client.close()
+
+    def test_set_vz_waits_through_running_heartbeat(self) -> None:
+        def handler(request: dict[str, Any]) -> Iterable[dict[str, Any]]:
+            self.assertEqual(request["cmd"], "SET_VZ")
+            self.assertEqual(request["vz_v"], 20.0)
+            self.assertNotIn("ramp_rate_v_per_s", request)
+            return [
+                {"status": "running", "vz_v": 0.0, "target_vz": 20.0},
+                {"status": "done", "success": True, "vz_v": 19.5},
+            ]
+
+        with _FakeJsonLinesServer(handler) as server:
+            client = MEMSControlClient(
+                host=server.host,
+                port=server.port,
+                timeout=1.0,
+                move_timeout=5.0,
+            )
+            client.connect()
+            self.assertEqual(client.set_vz(20.0), 19.5)
+            client.close()
+            self.assertEqual(len(server.requests), 1)
+
+    def test_set_vz_includes_ramp_rate_when_positive(self) -> None:
+        def handler(request: dict[str, Any]) -> Iterable[dict[str, Any]]:
+            self.assertEqual(request["cmd"], "SET_VZ")
+            self.assertEqual(request["vz_v"], 20.0)
+            self.assertEqual(request["ramp_rate_v_per_s"], 5.0)
+            return [{"status": "done", "success": True, "vz_v": 20.0}]
+
+        with _FakeJsonLinesServer(handler) as server:
+            client = MEMSControlClient(
+                host=server.host,
+                port=server.port,
+                timeout=1.0,
+                move_timeout=5.0,
+            )
+            client.connect()
+            self.assertEqual(client.set_vz(20.0, ramp_rate_v_per_s=5.0), 20.0)
+            client.close()
+
+    def test_build_set_vz_payload_omits_ramp_rate_for_zero(self) -> None:
+        payload = MEMSControlClient._build_set_vz_payload(20.0, 0.0)
+        self.assertEqual(payload, {"cmd": "SET_VZ", "vz_v": 20.0})
+
+    def test_set_vz_disabled_raises_clear_error(self) -> None:
+        def handler(_request: dict[str, Any]) -> Iterable[dict[str, Any]]:
+            return [{"status": "disabled"}]
+
+        with _FakeJsonLinesServer(handler) as server:
+            client = MEMSControlClient(
+                host=server.host, port=server.port, timeout=1.0
+            )
+            client.connect()
+            with self.assertRaises(MEMSControlDisabledError):
+                client.set_vz(1.0)
+            client.close()
+
+    def test_set_vz_protocol_error_raises(self) -> None:
+        def handler(_request: dict[str, Any]) -> Iterable[dict[str, Any]]:
+            return [{"status": "error", "error": "bad request"}]
+
+        with _FakeJsonLinesServer(handler) as server:
+            client = MEMSControlClient(
+                host=server.host, port=server.port, timeout=1.0
+            )
+            client.connect()
+            with self.assertRaisesRegex(MEMSControlError, "bad request"):
+                client.set_vz(1.0)
+            client.close()
+
     def test_driver_marks_target_step_as_atomic(self) -> None:
         fields = {field.key: field for field in VirtualMEMSInstrument.getJobConfigFields()}
         self.assertTrue(fields["targetStep"].sweepable)
         self.assertEqual(fields["targetStep"].fieldType, "float")
+        self.assertTrue(fields["vzV"].sweepable)
         transport = _ClosedTransport()
         instrument = VirtualMEMSInstrument(name="mems", transport=transport)
         self.assertFalse(instrument.shouldUseRuntimeSlew("targetStep"))
+        self.assertFalse(instrument.shouldUseRuntimeSlew("vzV"))
         self.assertTrue(instrument.shouldUseRuntimeSlew("moveSpeed"))
 
 

@@ -74,9 +74,22 @@ class MEMSControlClient:
             raise MEMSControlError(f"Unexpected GET_POSITION response: {response!r}")
         return float(response["position"])
 
+    def get_vz(self) -> float:
+        response = self._request({"cmd": "GET_VZ"})
+        if "vz_v" not in response:
+            raise MEMSControlError(f"Unexpected GET_VZ response: {response!r}")
+        return float(response["vz_v"])
+
     def get_status(self) -> dict[str, Any]:
         response = self._request({"cmd": "GET_STATUS"})
-        required = {"position", "target", "moving", "remote_enabled", "task_status"}
+        required = {
+            "position",
+            "target",
+            "vz_v",
+            "moving",
+            "remote_enabled",
+            "task_status",
+        }
         missing = sorted(required - set(response))
         if missing:
             raise MEMSControlError(
@@ -87,7 +100,7 @@ class MEMSControlClient:
     def move(
         self, target_step: float, microstep: int = 16, speed: float = 500.0
     ) -> None:
-        self._send(
+        self._wait_remote_task(
             {
                 "cmd": "MOVE",
                 "target_step": self._format_target_step(target_step),
@@ -96,16 +109,36 @@ class MEMSControlClient:
             }
         )
 
+    def set_vz(self, vz_v: float, ramp_rate_v_per_s: float = 0.0) -> float:
+        response = self._wait_remote_task(
+            self._build_set_vz_payload(vz_v, ramp_rate_v_per_s)
+        )
+        if "vz_v" in response:
+            return float(response["vz_v"])
+        return float(vz_v)
+
+    @staticmethod
+    def _build_set_vz_payload(vz_v: float, ramp_rate_v_per_s: float) -> dict[str, Any]:
+        payload: dict[str, Any] = {"cmd": "SET_VZ", "vz_v": float(vz_v)}
+        rate = float(ramp_rate_v_per_s)
+        if rate > 0.0:
+            payload["ramp_rate_v_per_s"] = rate
+        return payload
+
+    def _wait_remote_task(self, payload: dict[str, Any]) -> dict[str, Any]:
+        self._send(payload)
         deadline = (
             None
             if self.move_timeout is None or float(self.move_timeout) <= 0.0
             else time.monotonic() + float(self.move_timeout)
         )
+        command = str(payload.get("cmd", "remote task"))
         while True:
             if deadline is not None and time.monotonic() >= deadline:
-                raise TimeoutError("Timed out waiting for VirtualMEMS MOVE to finish.")
+                raise TimeoutError(
+                    f"Timed out waiting for VirtualMEMS {command} to finish."
+                )
             response = self._read_response()
-
             status = response.get("status")
             if status == "running":
                 continue
@@ -117,10 +150,16 @@ class MEMSControlClient:
                 raise MEMSControlBusyError("VirtualMEMS is busy.")
             if status == "done":
                 if response.get("success") is True:
-                    return
-                error = response.get("error", "MOVE failed.")
-                raise MEMSControlError(f"VirtualMEMS MOVE failed: {error}")
-            raise MEMSControlError(f"Unexpected MOVE response: {response!r}")
+                    return response
+                error = response.get("error", "remote task failed")
+                raise MEMSControlError(f"VirtualMEMS {command} failed: {error}")
+            if status == "error":
+                raise MEMSControlError(
+                    response.get("error", "VirtualMEMS protocol error")
+                )
+            raise MEMSControlError(
+                f"Unexpected VirtualMEMS {command} response: {response!r}"
+            )
 
     def _request(self, payload: dict[str, Any]) -> dict[str, Any]:
         self._send(payload)
@@ -156,8 +195,8 @@ class VirtualMEMSInstrument(BaseInstrument):
 
     Commands are JSON Lines over TCP:
     - ``PING`` verifies the remote-control endpoint is alive.
-    - ``GET_POSITION`` / ``GET_STATUS`` provide measurement values.
-    - ``MOVE`` is atomic and includes target position, microstep, and speed.
+    - ``GET_POSITION`` / ``GET_VZ`` / ``GET_STATUS`` provide measurement values.
+    - ``MOVE`` and ``SET_VZ`` are peer-level atomic remote tasks.
     """
 
     displayName = "VirtualMEMS TCP Controller"
@@ -186,6 +225,8 @@ class VirtualMEMSInstrument(BaseInstrument):
         return [
             ("positionStep", "Position (step)"),
             ("targetStepReadback", "Target Readback (step)"),
+            ("vzV", "Vz (MEMS V)"),
+            ("targetVzReadback", "Target Vz Readback (MEMS V)"),
             ("moving", "Moving (0/1)"),
             ("remoteEnabled", "Remote Enabled (0/1)"),
         ]
@@ -230,13 +271,46 @@ class VirtualMEMSInstrument(BaseInstrument):
             ),
             ConfigFieldDefinition(
                 key="moveTimeoutSeconds",
-                label="Move Timeout (s)",
+                label="Remote Task Timeout (s)",
                 fieldType="float",
                 default=0.0,
                 minValue=0.0,
                 maxValue=24.0 * 3600.0,
                 stepValue=1.0,
-                helpText="Maximum total wait for MOVE completion. Zero disables the total timeout.",
+                helpText=(
+                    "Maximum total wait for MOVE or SET_VZ completion. "
+                    "Zero disables the total timeout."
+                ),
+            ),
+            ConfigFieldDefinition(
+                key="vzV",
+                label="Vz (MEMS V)",
+                fieldType="float",
+                default=0.0,
+                minValue=0.0,
+                maxValue=150.0,
+                stepValue=0.1,
+                sweepable=True,
+                helpText=(
+                    "Sweepable MEMS Vz voltage. Applying this field sends one "
+                    "atomic SET_VZ command with the configured "
+                    "vzRampRateVPerS. MOVE and SET_VZ are peer-level remote "
+                    "tasks; only one may run at a time."
+                ),
+            ),
+            ConfigFieldDefinition(
+                key="vzRampRateVPerS",
+                label="Vz Ramp Rate (V/s)",
+                fieldType="float",
+                default=0.0,
+                minValue=0.0,
+                maxValue=1000.0,
+                stepValue=0.01,
+                helpText=(
+                    "Ramp rate included in each SET_VZ command. Zero omits "
+                    "ramp_rate_v_per_s for an immediate jump; values above "
+                    "zero ramp from the current Vz at MEMS V/s."
+                ),
             ),
         ]
 
@@ -270,6 +344,17 @@ class VirtualMEMSInstrument(BaseInstrument):
                 self.jobConfig.get("moveTimeoutSeconds", 0.0),
             ),
         )
+        self._set_vz_to(
+            target.get("vzV", self.jobConfig.get("vzV", 0.0)),
+            target.get(
+                "vzRampRateVPerS",
+                self.jobConfig.get("vzRampRateVPerS", 0.0),
+            ),
+            target.get(
+                "moveTimeoutSeconds",
+                self.jobConfig.get("moveTimeoutSeconds", 0.0),
+            ),
+        )
 
     def readMeasurements(self, signalKeys: list[str]) -> dict[str, float]:
         requested = {str(k) for k in signalKeys}
@@ -277,12 +362,19 @@ class VirtualMEMSInstrument(BaseInstrument):
         if "positionStep" in requested and len(requested) == 1:
             values["positionStep"] = float(self._client.get_position())
             return values
+        if "vzV" in requested and len(requested) == 1:
+            values["vzV"] = float(self._client.get_vz())
+            return values
 
         status = self._client.get_status()
         if "positionStep" in requested:
             values["positionStep"] = float(status.get("position", 0.0))
         if "targetStepReadback" in requested:
             values["targetStepReadback"] = float(status.get("target", 0.0))
+        if "vzV" in requested:
+            values["vzV"] = float(status.get("vz_v", 0.0))
+        if "targetVzReadback" in requested:
+            values["targetVzReadback"] = float(status.get("target_vz", status.get("vz_v", 0.0)))
         if "moving" in requested:
             values["moving"] = 1.0 if bool(status.get("moving", False)) else 0.0
         if "remoteEnabled" in requested:
@@ -301,11 +393,18 @@ class VirtualMEMSInstrument(BaseInstrument):
                 self.jobConfig.get("moveTimeoutSeconds", 0.0),
             )
             return
-        if key in {"microstep", "moveSpeed", "moveTimeoutSeconds"}:
+        if key == "vzV":
+            self._set_vz_to(
+                value,
+                self.jobConfig.get("vzRampRateVPerS", 0.0),
+                self.jobConfig.get("moveTimeoutSeconds", 0.0),
+            )
+            return
+        if key in {"microstep", "moveSpeed", "moveTimeoutSeconds", "vzRampRateVPerS"}:
             return
 
     def shouldUseRuntimeSlew(self, key: str) -> bool:
-        if key == "targetStep":
+        if key in {"targetStep", "vzV"}:
             return False
         return super().shouldUseRuntimeSlew(key)
 
@@ -332,6 +431,19 @@ class VirtualMEMSInstrument(BaseInstrument):
         self.jobConfig["targetStep"] = round(float(target_step), 3)
         self.jobConfig["microstep"] = int(float(microstep))
         self.jobConfig["moveSpeed"] = float(speed)
+        self.jobConfig["moveTimeoutSeconds"] = float(move_timeout_seconds)
+
+    def _set_vz_to(
+        self,
+        vz_v: float | int | str,
+        ramp_rate_v_per_s: float | int | str,
+        move_timeout_seconds: float | int | str,
+    ) -> None:
+        self._client.move_timeout = self._normalize_timeout(move_timeout_seconds)
+        rate = float(ramp_rate_v_per_s)
+        applied = self._client.set_vz(float(vz_v), ramp_rate_v_per_s=rate)
+        self.jobConfig["vzV"] = float(applied)
+        self.jobConfig["vzRampRateVPerS"] = rate
         self.jobConfig["moveTimeoutSeconds"] = float(move_timeout_seconds)
 
     def _move_timeout_seconds(self) -> float | None:
