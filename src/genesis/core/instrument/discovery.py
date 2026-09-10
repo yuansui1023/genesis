@@ -6,6 +6,7 @@ import pkgutil
 from genesis.core.instrument.registry import InstrumentRegistry
 
 _BUILT_IN_DRIVER_MODULES = [
+    "genesis.instruments.agilent34401a.driver",
     "genesis.instruments.ami420.driver",
     "genesis.instruments.b29xx.driver",
     "genesis.instruments.sr850.driver",

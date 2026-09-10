@@ -39,6 +39,11 @@ from genesis.core.runtime.acquisition_worker import (
     AcquisitionWorker,
     startAcquisitionThread,
 )
+from genesis.core.runtime.critical_condition import (
+    CriticalRampingConfig,
+    merge_critical_measurement_keys,
+    validate_critical_ramping_config,
+)
 from genesis.core.runtime.setpoint_safety import (
     SetpointSafetyController,
     ValueBounds,
@@ -107,6 +112,8 @@ class MainWindow(QMainWindow):
         self._taskWorker: _BackgroundTaskWorker | None = None
         self._taskLabel: str = ""
         self._taskOnSuccess: Callable[[Any], None] | None = None
+        self._criticalHoldActive = False
+        self._lastCriticalTrigger: dict[str, Any] | None = None
 
         self._setupUi()
         self._refreshControlStates()
@@ -176,6 +183,11 @@ class MainWindow(QMainWindow):
 
         runLayout.addLayout(jobInfoRow)
         runLayout.addWidget(self.statusLabel)
+        self.holdStateLabel = QLabel("", runTab)
+        self.holdStateLabel.setWordWrap(True)
+        self.holdStateLabel.setVisible(False)
+        self.holdStateLabel.setStyleSheet("color: #f5c16c; font-weight: 700;")
+        runLayout.addWidget(self.holdStateLabel)
         runLayout.addLayout(buttonRow)
         runLayout.addWidget(self.sweepProgressLabel)
         runLayout.addWidget(self.sweepProgressBar)
@@ -221,7 +233,12 @@ class MainWindow(QMainWindow):
 
         loadEnabled = not taskRunning and not acquisitionRunning
         initializeEnabled = hasJob and not taskRunning and not acquisitionRunning
-        startEnabled = isInitialized and not taskRunning and not acquisitionRunning
+        startEnabled = (
+            isInitialized
+            and not taskRunning
+            and not acquisitionRunning
+            and not self._criticalHoldActive
+        )
         stopEnabled = (acquisitionRunning or isInitialized) and not taskRunning
         abortEnabled = True
         if abortLatched:
@@ -363,6 +380,7 @@ class MainWindow(QMainWindow):
         self.abortController.requestAbort()
         self._stopAcquisition()
         self._applySafeStateToInitializedInstruments()
+        self._clearCriticalHold()
         # Force user through initialize path after an abort.
         self._initializedJobId = None
         self._checkpointCurrentSweepFile()
@@ -388,6 +406,12 @@ class MainWindow(QMainWindow):
         if self._initializedJobId != currentJobId:
             self.statusLabel.setText("Initialize Instruments First.")
             return
+        if self._criticalHoldActive:
+            self.statusLabel.setText(
+                "Settings are held after critical ramping. "
+                "Initialize or Stop before starting another sweep."
+            )
+            return
         self._startSweepRun()
 
     def _onInitializeClicked(self) -> None:
@@ -401,6 +425,7 @@ class MainWindow(QMainWindow):
         if not self._stopAcquisition():
             self.statusLabel.setText("Waiting for active sweep to stop...")
             return
+        self._clearCriticalHold()
         self._closeInitializedInstruments()
         self._initializedJobId = None
         self.sweepProgressLabel.setText("Sweep Progress: Initializing")
@@ -470,6 +495,7 @@ class MainWindow(QMainWindow):
             return
         self._closeInitializedInstruments()
         self._initializedJobId = None
+        self._clearCriticalHold()
         self.currentJob = JobModel.fromJson(payload)
         self.jobNameLabel.setText(path.name)
         self.jobIdValueLabel.setText(self.currentJob.jobId)
@@ -677,6 +703,9 @@ class MainWindow(QMainWindow):
             )
             requiredKeysByInstrumentId.setdefault(instrumentId, set()).update(required)
 
+        criticalConfig = CriticalRampingConfig.from_job_definition(jobDefinition)
+        merge_critical_measurement_keys(requiredKeysByInstrumentId, criticalConfig)
+
         return (
             instrumentsById,
             {
@@ -838,6 +867,7 @@ class MainWindow(QMainWindow):
         self._rawLogKeysByInstrumentId = dict(state.get("rawLogKeysByInstrumentId", {}))
         self._initializedJobId = str(state.get("initializedJobId", ""))
         self._latestValues.update(dict(state.get("latestValueUpdates", {})))
+        self._clearCriticalHold()
         self.statusLabel.setText("Initialization Complete. Ready to Start Sweep.")
         self.sweepProgressLabel.setText("Sweep Progress: Ready")
         self.sweepProgressBar.setValue(0)
@@ -859,6 +889,11 @@ class MainWindow(QMainWindow):
         targetPath, exportFormat = exportTarget
         if not self._applySweepStartNonSweptConfig(jobDefinition):
             return
+        criticalConfig = CriticalRampingConfig.from_job_definition(jobDefinition)
+        criticalError = validate_critical_ramping_config(criticalConfig)
+        if criticalError is not None:
+            self.statusLabel.setText(criticalError)
+            return
         self._prepareDataExport(targetPath, exportFormat)
         self._clearRunPlotData()
         if not self._initializedSweeps:
@@ -871,6 +906,7 @@ class MainWindow(QMainWindow):
             intervalSeconds=0.2,
             initialSweepValuesByInstrumentId=self._initialSweepValuesByInstrumentId(),
             boundsByInstrumentId=self._setpointBoundsByInstrumentId,
+            criticalRamping=criticalConfig,
         )
         thread, worker = startAcquisitionThread(worker)
         worker.sampleEmitted.connect(self._onSampleEmitted)
@@ -878,6 +914,7 @@ class MainWindow(QMainWindow):
         worker.sweepProgress.connect(self._onSweepProgress)
         worker.rampProgress.connect(self._onRampProgress)
         worker.sweepCompleted.connect(self._onSweepCompletedNaturally)
+        worker.criticalTriggered.connect(self._onCriticalTriggered)
 
         self._acqThread = thread
         self._acqWorker = worker
@@ -936,6 +973,79 @@ class MainWindow(QMainWindow):
             return
         self.statusLabel.setText(
             "Sweep complete. Ramping swept outputs back to safe state..."
+        )
+        jobDefinition = self.currentJob.rawDefinition
+        latestSnapshot = dict(self._latestValues)
+        self._startBackgroundTask(
+            "Stop re-initialize",
+            lambda: self._prepareReinitializeState(jobDefinition, latestSnapshot),
+            self._applyReinitializeState,
+        )
+
+    def _clearCriticalHold(self) -> None:
+        self._criticalHoldActive = False
+        self.holdStateLabel.setVisible(False)
+        self.holdStateLabel.setText("")
+
+    def _setHoldStateVisible(self, visible: bool, reason: str = "") -> None:
+        if not visible:
+            self.holdStateLabel.setVisible(False)
+            self.holdStateLabel.setText("")
+            return
+        message = reason.strip() or "Critical ramping triggered."
+        self.holdStateLabel.setText(
+            f"SETTINGS HELD: {message} Outputs remain at their triggered values. "
+            "Use Stop to ramp to safe state, Abort for immediate safe state, "
+            "or Initialize before starting another sweep."
+        )
+        self.holdStateLabel.setVisible(True)
+
+    def _writeCriticalTriggerRecord(self, payload: dict[str, Any]) -> None:
+        base = self._dataBasePath
+        if base is None:
+            return
+        path = base.with_name(f"{base.stem}_critical_trigger.json")
+        try:
+            path.write_text(
+                json.dumps(payload, indent=2, sort_keys=True), encoding="utf8"
+            )
+        except Exception as exc:
+            self.statusLabel.setText(f"Critical trigger log warning: {exc}")
+
+    def _onCriticalTriggered(self, payload: dict[str, Any]) -> None:
+        if not isinstance(payload, dict):
+            return
+        self._lastCriticalTrigger = dict(payload)
+        self._writeCriticalTriggerRecord(self._lastCriticalTrigger)
+        hold = bool(payload.get("holdSettingsOnTrigger", False))
+        reason = str(payload.get("reason") or "Critical ramping triggered.")
+        stopped = self._stopAcquisition()
+        if hold:
+            self._criticalHoldActive = True
+            self._setHoldStateVisible(True, reason)
+            if stopped:
+                self.statusLabel.setText(
+                    f"{reason} Settings held at current setpoints. "
+                    "Initialize or Stop to leave this state."
+                )
+            else:
+                self.statusLabel.setText(
+                    f"{reason} Settings will be held. "
+                    "Waiting for acquisition to exit..."
+                )
+            self._refreshControlStates()
+            return
+        self._clearCriticalHold()
+        if not stopped:
+            self.statusLabel.setText(
+                f"{reason} Waiting for acquisition thread to exit..."
+            )
+            return
+        if self.currentJob is None or not self._initializedInstrumentsById:
+            self.statusLabel.setText(f"{reason} Data acquisition ended.")
+            return
+        self.statusLabel.setText(
+            f"{reason} Ramping swept outputs back to safe state..."
         )
         jobDefinition = self.currentJob.rawDefinition
         latestSnapshot = dict(self._latestValues)
@@ -1140,6 +1250,7 @@ class MainWindow(QMainWindow):
     def _applyReinitializeState(self, state: dict[str, Any]) -> None:
         self._initializedJobId = str(state.get("initializedJobId", ""))
         self._latestValues.update(dict(state.get("latestValueUpdates", {})))
+        self._clearCriticalHold()
         self.sweepProgressLabel.setText("Sweep Progress: Ready")
         self.sweepProgressBar.setValue(0)
         self.statusLabel.setText(

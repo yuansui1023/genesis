@@ -7,6 +7,10 @@ import numpy as np
 from PySide6.QtCore import QObject, QThread, Signal
 
 from genesis.core.instrument.base_instrument import BaseInstrument
+from genesis.core.runtime.critical_condition import (
+    CriticalConditionMonitor,
+    CriticalRampingConfig,
+)
 from genesis.core.runtime.setpoint_safety import SetpointSafetyController, ValueBounds
 
 
@@ -20,6 +24,7 @@ class AcquisitionWorker(QObject):
     sweepProgress = Signal(int, int, int, int, str)
     rampProgress = Signal(float, str)  # 0..1, label
     sweepCompleted = Signal()
+    criticalTriggered = Signal(dict)
 
     def __init__(
         self,
@@ -29,6 +34,7 @@ class AcquisitionWorker(QObject):
         intervalSeconds: float = 0.2,
         initialSweepValuesByInstrumentId: dict[str, dict[str, float]] | None = None,
         boundsByInstrumentId: dict[str, dict[str, ValueBounds]] | None = None,
+        criticalRamping: CriticalRampingConfig | dict[str, Any] | None = None,
     ) -> None:
         super().__init__()
         self.instrumentsById = instrumentsById
@@ -43,6 +49,13 @@ class AcquisitionWorker(QObject):
         }
         self._safety = SetpointSafetyController(boundsByInstrumentId)
         self._safety.seed_last_values(self._activeSweepValuesByInstrumentId)
+        if isinstance(criticalRamping, CriticalRampingConfig):
+            critical_config = criticalRamping
+        elif isinstance(criticalRamping, dict):
+            critical_config = CriticalRampingConfig.from_mapping(criticalRamping)
+        else:
+            critical_config = CriticalRampingConfig()
+        self._criticalMonitor = CriticalConditionMonitor(critical_config)
 
     def requestStop(self) -> None:
         self._shouldStop = True
@@ -53,6 +66,12 @@ class AcquisitionWorker(QObject):
             for instId, values in self._activeSweepValuesByInstrumentId.items()
         }
 
+    def criticalTriggerSnapshot(self) -> dict[str, Any] | None:
+        trigger = self._criticalMonitor.trigger
+        if trigger is None:
+            return None
+        return trigger.to_dict()
+
     def run(self) -> None:
         self.statusMessage.emit("Data acquisition started.")
         completedSweep = False
@@ -61,7 +80,10 @@ class AcquisitionWorker(QObject):
         else:
             while not self._shouldStop:
                 self._sampleAllInstruments(time.time())
-                time.sleep(self.intervalSeconds)
+                if self._shouldStop:
+                    break
+                if self.intervalSeconds > 0.0:
+                    time.sleep(self.intervalSeconds)
         if completedSweep and not self._shouldStop:
             self.sweepCompleted.emit()
         self.statusMessage.emit("Data acquisition loop ended.")
@@ -158,6 +180,7 @@ class AcquisitionWorker(QObject):
                             (pointIndex - 1) + (rampApplied / max(1, rampSteps))
                         ) / max(1, len(values))
                         self.rampProgress.emit(float(min(max(frac, 0.0), 1.0)), label)
+                        self._sampleForCriticalDuringRamp()
 
                     slewCompleted = self._safety.apply_slew_limited(
                         instrument_id=instrumentId,
@@ -173,6 +196,8 @@ class AcquisitionWorker(QObject):
                     )
                     if not slewCompleted:
                         break
+                    if self._shouldStop:
+                        break
                     if instrument is not None:
 
                         def _on_settle_progress(measured: float) -> None:
@@ -184,6 +209,7 @@ class AcquisitionWorker(QObject):
                                 float(min(max(frac, 0.0), 1.0)),
                                 f"{label} (settling)",
                             )
+                            self._sampleForCriticalDuringRamp()
 
                         settled = instrument.waitForSetpoint(
                             key=key,
@@ -192,6 +218,8 @@ class AcquisitionWorker(QObject):
                             on_progress=_on_settle_progress,
                         )
                         if not settled:
+                            break
+                        if self._shouldStop:
                             break
                 except Exception as exc:
                     self.statusMessage.emit(f"{instrumentId}:{key} set failed: {exc}")
@@ -208,6 +236,8 @@ class AcquisitionWorker(QObject):
             if self._shouldStop:
                 break
             self._sampleAllInstruments(stepTimestamp)
+            if self._shouldStop:
+                break
             self.sweepProgress.emit(1, 1, pointIndex, len(values), label)
         return (
             (not self._shouldStop) and (len(values) > 0) and (pointIndex == len(values))
@@ -291,6 +321,7 @@ class AcquisitionWorker(QObject):
                             pointIndex + (outerRampApplied / max(1, outerRampSteps))
                         ) / max(1, totalPoints)
                         self.rampProgress.emit(float(min(max(frac, 0.0), 1.0)), label)
+                        self._sampleForCriticalDuringRamp()
 
                     slewCompleted = self._safety.apply_slew_limited(
                         instrument_id=outerInstId,
@@ -308,6 +339,8 @@ class AcquisitionWorker(QObject):
                     )
                     if not slewCompleted:
                         break
+                    if self._shouldStop:
+                        break
                     if outerInstrument is not None:
 
                         def _on_outer_settle(measured: float) -> None:
@@ -319,6 +352,7 @@ class AcquisitionWorker(QObject):
                                 float(min(max(frac, 0.0), 1.0)),
                                 f"{label} (settling outer)",
                             )
+                            self._sampleForCriticalDuringRamp()
 
                         settled = outerInstrument.waitForSetpoint(
                             key=outerKey,
@@ -327,6 +361,8 @@ class AcquisitionWorker(QObject):
                             on_progress=_on_outer_settle,
                         )
                         if not settled:
+                            break
+                        if self._shouldStop:
                             break
                 except Exception as exc:
                     self.statusMessage.emit(
@@ -381,6 +417,7 @@ class AcquisitionWorker(QObject):
                             self.rampProgress.emit(
                                 float(min(max(frac, 0.0), 1.0)), label
                             )
+                            self._sampleForCriticalDuringRamp()
 
                         slewCompleted = self._safety.apply_slew_limited(
                             instrument_id=innerInstId,
@@ -398,6 +435,8 @@ class AcquisitionWorker(QObject):
                         )
                         if not slewCompleted:
                             break
+                        if self._shouldStop:
+                            break
                         if innerInstrument is not None:
 
                             def _on_inner_settle(measured: float) -> None:
@@ -409,6 +448,7 @@ class AcquisitionWorker(QObject):
                                     float(min(max(frac, 0.0), 1.0)),
                                     f"{label} (settling inner)",
                                 )
+                                self._sampleForCriticalDuringRamp()
 
                             settled = innerInstrument.waitForSetpoint(
                                 key=innerKey,
@@ -417,6 +457,8 @@ class AcquisitionWorker(QObject):
                                 on_progress=_on_inner_settle,
                             )
                             if not settled:
+                                break
+                            if self._shouldStop:
                                 break
                     except Exception as exc:
                         self.statusMessage.emit(
@@ -439,6 +481,8 @@ class AcquisitionWorker(QObject):
                         "time"
                     ] = float(outerTimeValue)
                 self._sampleAllInstruments(stepTimestamp)
+                if self._shouldStop:
+                    break
                 pointIndex += 1
                 self.sweepProgress.emit(1, 1, pointIndex, totalPoints, label)
         return (not self._shouldStop) and (pointIndex == totalPoints)
@@ -478,6 +522,26 @@ class AcquisitionWorker(QObject):
         if "time" in activeTimeSweep:
             valuesByInstrumentId["__time__"] = {"time": float(activeTimeSweep["time"])}
         self.sampleEmitted.emit(float(timestamp), valuesByInstrumentId)
+        self._evaluateCritical(valuesByInstrumentId)
+
+    def _sampleForCriticalDuringRamp(self) -> None:
+        if not self._criticalMonitor.config.enabled or self._shouldStop:
+            return
+        self._sampleAllInstruments(time.time())
+
+    def _evaluateCritical(
+        self, valuesByInstrumentId: dict[str, dict[str, float]]
+    ) -> bool:
+        if self._criticalMonitor.trigger is not None:
+            self._shouldStop = True
+            return True
+        trigger = self._criticalMonitor.evaluate(valuesByInstrumentId)
+        if trigger is None:
+            return False
+        self._shouldStop = True
+        self.statusMessage.emit(trigger.reason_text())
+        self.criticalTriggered.emit(trigger.to_dict())
+        return True
 
     def _buildSweepValues(self, sweep: dict[str, Any]) -> np.ndarray:
         start = float(sweep.get("start", 0.0))

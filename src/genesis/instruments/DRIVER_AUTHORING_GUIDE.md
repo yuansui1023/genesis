@@ -5,6 +5,8 @@ This document explains how to write a functional instrument driver in Genesis wi
 It is based on current working drivers:
 - `src/genesis/instruments/b29xx/driver.py`
 - `src/genesis/instruments/sr850/driver.py`
+- `src/genesis/instruments/agilent34401a/driver.py` (example of a single-function
+  DMM with dependent configuration replay and batched readings)
 - `src/genesis/instruments/ami420/driver.py` (example of a controller-managed
   ramp that uses the async settle hook)
 - `src/genesis/instruments/virtual_mems/driver.py` (example of a TCP JSON Lines
@@ -15,6 +17,7 @@ It is based on current working drivers:
 Create a folder under `src/genesis/instruments/`:
 
 - `src/genesis/instruments/<instrument_key>/driver.py`
+- `src/genesis/instruments/<instrument_key>/__init__.py`
 
 Example:
 - `src/genesis/instruments/my_device/driver.py`
@@ -24,6 +27,10 @@ Genesis discovers this automatically via `loadBuiltInInstruments()` in:
 
 Your module must export:
 - `registerInstruments(registry)`
+
+Also add built-in driver modules to `_BUILT_IN_DRIVER_MODULES` in `discovery.py`.
+The explicit list supports environments where package enumeration is unavailable;
+the normal package scan remains automatic.
 
 ## 2) Required APIs to Implement
 
@@ -195,6 +202,12 @@ Contract:
 The acquisition worker calls this automatically after each non-time sweep
 step's setpoint is applied, both for 1D and 2D sweeps.
 
+When a job enables **critical ramping**, the acquisition worker also reads
+configured measurement keys during `on_progress` (and during software slew
+`on_applied` callbacks). Keep progress callbacks reasonably frequent so a
+threshold crossing can be observed before the next sweep point, and keep
+`readMeasurements` cheap enough to call at that cadence.
+
 ### 7.2) Initialization settling (`finalizeInitialization`)
 
 After the main window applies safe/config setpoints during **Initialize**, it
@@ -207,6 +220,32 @@ Typically delegate to the same polling logic as `waitForSetpoint` for the
 commanded field/current. Runs on the background init thread; keep it
 cooperative with `should_stop` for abort.
 
+### 7.3) Critical ramping (runtime, not driver-local)
+
+Genesis can stop a run when a selected instrument measurement crosses a
+threshold (`src/genesis/core/runtime/critical_condition.py`). This is
+device-agnostic orchestration in the acquisition worker, not a per-driver
+feature.
+
+Driver contract implications:
+
+- Measurement keys used in a critical condition must be readable on every
+  sample via `readMeasurements`. Genesis auto-adds those keys to the job's
+  measurement set at runtime even if the user did not check them in the
+  instrument form.
+- `readMeasurements` should return only successfully parsed finite floats.
+  Missing keys, parse failures, and NaN/Inf values do not satisfy a
+  condition.
+- If a job enables **hold settings on trigger**, Genesis will **not** call
+  `applySafeState` after that stop. Drivers must not assume that a run
+  always ends in safe state. Stop, Abort, and Initialize remain the
+  explicit ways to leave a held output.
+- Abort still calls `applySafeState` immediately, including from a held
+  state.
+
+Critical ramping is software-layer only. Document any hardware protection
+the instrument itself provides; do not treat this mode as an interlock.
+
 ## 8) `applyConfigValue` Implementation Pattern
 
 Use a clear key-dispatch structure:
@@ -218,6 +257,21 @@ Use a clear key-dispatch structure:
    - emit command(s),
    - return.
 4. Ignore unknown keys safely (or raise if appropriate).
+
+For interdependent settings, validate the proposed complete configuration before
+persisting values or sending commands. Reject invalid numeric values (including
+NaN/infinity) and unsupported discrete choices without mutating the previous
+configuration. Numeric enums should publish both their choices and bounds.
+
+Some instruments preset additional settings when selecting a function. For
+example, the 34401A's `CONF:<function>` presets trigger source/count/delay, sample
+count, autozero, AC filter, impedance, and math state. Apply the function first,
+then replay the supported dependent settings in a fixed order. Validate and
+retain inactive function-specific settings without sending invalid commands;
+apply them when that function is explicitly selected. Separate manual-range and
+manual-delay values from their automatic-mode switches so replaying a dormant
+manual value cannot silently disable an enabled automatic mode. The 34401A has
+no output setpoint, so every configuration field is `sweepable=False`.
 
 Keep formatting helpers (`_fmtFloat`) for consistent command strings.
 
@@ -236,6 +290,32 @@ Recommended:
 - Read only requested keys.
 - Parse robustly (strip, split commas if needed).
 - Return `dict[str, float]` with only successful values.
+
+### 9.1) Single-function instruments and sample batches
+
+When hardware can measure only one function at a time, document whether reads
+return only the active function or explicitly switch/restore functions. Prefer
+active-function-only reads: silently ignore other requested keys and avoid I/O
+when none match. Do not use a query that implicitly reconfigures the instrument.
+
+Define how multiple samples become a scalar signal. The 34401A driver returns a
+batch mean, requires the expected sample count, accepts a trailing comma, and
+omits the key if any sample is malformed, nonfinite, or an overload sentinel.
+Transport errors still propagate. Its `READ?` path streams IMM/EXT acquisitions;
+BUS uses `INIT`, `*TRG`, `FETC?` and enforces the 512-reading memory limit even
+though `SAMP:COUN` supports 50,000 readings. Do not insert `*OPC?` between `INIT`
+and `*TRG`: the 34401A does not accept ordinary commands while waiting for BUS.
+
+Measurement-only does not imply absence of excitation. The 34401A's resistance,
+continuity and diode modes source current. Its safe-state target overlays
+`metadata["safeConfig"]` on `jobConfig`, then substitutes autoranged DCV for all
+four excitation modes before applying commands. Document electrical limits and
+abort limitations: this changes function, not wiring, and a pending acquisition
+after a timeout needs a device clear before new configuration can take effect.
+The current `BaseTransport` API has no device-clear hook. Closing and reopening
+with `visaClearOnOpen` enabled attempts a clear, but the transport ignores clear
+failures. Confirm recovery or use a supported controller device clear before
+reinitializing.
 
 ## 10) Registration Boilerplate
 
@@ -322,6 +402,14 @@ Hardware checklist if errors persist:
 
 The AMI Model 420 driver exposes ``getDefaultTransportSettings()`` for
 reasonable magnet-ramp timeouts; merge with manual hardware checks first.
+
+For integrating meters, document the timeout budget in the driver and expose
+per-job overrides for combinations beyond it. The 34401A defaults to 120,000 ms:
+at 50 Hz, 100 PLC takes 2 s per integration; an engineering allowance of three
+integrations plus 1 s settling per sample gives 70 s for ten samples, plus 50 s
+margin. This does not cover every valid sample count or trigger delay. Account
+for delays before each sample, autozero, filter settling, and external-trigger
+waits when choosing a larger `visaTimeoutMs`.
 
 ## 13) TCP JSON Lines virtual instruments
 

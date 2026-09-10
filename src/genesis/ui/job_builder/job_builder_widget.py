@@ -25,6 +25,10 @@ from PySide6.QtWidgets import (
 from genesis.app.user_dirs import genesis_jobs_dir
 from genesis.core.instrument.registry import InstrumentRegistry
 from genesis.core.runtime.expression_eval import ExpressionError, compileExpression
+from genesis.ui.job_builder.critical_condition_editor import (
+    CriticalConditionEditor,
+    MeasurementSignalRef,
+)
 from genesis.ui.job_builder.instrument_instance_editor import InstrumentInstanceEditor
 from genesis.ui.job_builder.plot_definition_editor import (
     PlotDefinitionEditor,
@@ -173,6 +177,8 @@ class JobBuilderWidget(QWidget):
         self.sweepsContainerLayout.setSpacing(8)
         sweepsLayout.addWidget(self.sweepsContainer)
         sweepsTabLayout.addWidget(sweepsBox)
+        self.criticalEditor = CriticalConditionEditor(parent=sweepsTab)
+        sweepsTabLayout.addWidget(self.criticalEditor)
         sweepsTabLayout.addStretch(1)
 
         plotsBox = QGroupBox("Plot Configuration", self)
@@ -225,6 +231,7 @@ class JobBuilderWidget(QWidget):
         self._refreshJobLabels()
         self.saveJobButton.setEnabled(True)
         self.saveCurrentJobButton.setEnabled(False)
+        self.criticalEditor.setDefinition({})
 
     def _clearInstanceEditors(self) -> None:
         self._instanceEditors.clear()
@@ -318,6 +325,10 @@ class JobBuilderWidget(QWidget):
         self._ensureSingleSweepEditor(mode=str(sweepDef.get("mode", "1d")))
         if self._sweepEditors:
             self._sweepEditors[0].setDefinition(sweepDef)
+        criticalRaw = definition.get("criticalRamping")
+        self.criticalEditor.setDefinition(
+            dict(criticalRaw) if isinstance(criticalRaw, dict) else {}
+        )
 
         for plotDef in list(definition.get("plots", [])):
             available = self._getPlottableVariableRefs()
@@ -345,6 +356,9 @@ class JobBuilderWidget(QWidget):
             error = editor.validateDefinition()
             if error:
                 return f"Plot {index} has an invalid expression:\n{error}"
+        criticalError = self.criticalEditor.validateDefinition()
+        if criticalError:
+            return criticalError
         return None
 
     def _onSaveCurrentJobClicked(self) -> None:
@@ -622,7 +636,30 @@ class JobBuilderWidget(QWidget):
     def _refreshVariableDependentEditors(self) -> None:
         self._refreshPlotEditorsAvailableVariables()
         self._refreshSweepEditorsAvailableVariables()
+        self._refreshCriticalEditorAvailableSignals()
         self._applySweepSelectionToInstrumentEditors()
+
+    def _getMeasurementSignalRefs(self) -> list[MeasurementSignalRef]:
+        refs: list[MeasurementSignalRef] = []
+        for instEditor in self._instanceEditors:
+            instId = instEditor.getInstanceId()
+            if not instId:
+                continue
+            for (
+                key,
+                label,
+            ) in instEditor.instrumentType.getAvailableMeasurementSignals():
+                refs.append(
+                    MeasurementSignalRef(
+                        instrumentId=instId,
+                        key=str(key),
+                        label=str(label),
+                    )
+                )
+        return refs
+
+    def _refreshCriticalEditorAvailableSignals(self) -> None:
+        self.criticalEditor.setAvailableSignals(self._getMeasurementSignalRefs())
 
     def _plotLabelForEditor(self, editor: PlotDefinitionEditor) -> str:
         definition = editor.toDefinition()
@@ -841,6 +878,7 @@ class JobBuilderWidget(QWidget):
             "plotVariables": plotVariables,
             "customVariables": customVariables,
             "sweeps": sweeps,
+            "criticalRamping": self.criticalEditor.toDefinition(),
             "sweepMode": (
                 str(sweepDefinitions[0].get("mode", "1d")) if sweepDefinitions else "1d"
             ),
