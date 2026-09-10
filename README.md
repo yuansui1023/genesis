@@ -85,7 +85,7 @@ python -m genesis.app.main
 1. Start the app and create/load a job.
 2. Add instrument instances and configure fields from the driver forms.
 3. Define sweep settings (1D or 2D).
-4. Optionally enable Critical Ramping on the Sweep tab: choose measurement conditions, whether any/all must match, consecutive-sample debounce, and whether to hold instrument settings on trigger.
+4. Optionally enable Critical Ramping on the Sweep tab: choose measurement conditions (`>`, `<`, `|x| >`, `|x| <`), whether any/all must match, consecutive-sample debounce, and whether to hold instrument settings on trigger.
 5. Define plots (XY and/or heatmap).
 6. Click Initialize to apply safe initialization state.
 7. Click Start Sweep to begin acquisition.

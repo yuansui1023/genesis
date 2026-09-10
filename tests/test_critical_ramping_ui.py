@@ -35,7 +35,7 @@ class CriticalRampingUiTests(unittest.TestCase):
                 {
                     "instrumentId": "dmm",
                     "signalKey": "currentA",
-                    "comparison": "gt",
+                    "comparison": "abs_gt",
                     "threshold": 1.5,
                 }
             ],
@@ -47,6 +47,7 @@ class CriticalRampingUiTests(unittest.TestCase):
         self.assertEqual(restored["combine"], "all")
         self.assertEqual(restored["consecutiveHitsRequired"], 3)
         self.assertEqual(restored["conditions"][0]["signalKey"], "currentA")
+        self.assertEqual(restored["conditions"][0]["comparison"], "abs_gt")
         self.assertAlmostEqual(float(restored["conditions"][0]["threshold"]), 1.5)
 
         editor.setDefinition(None)

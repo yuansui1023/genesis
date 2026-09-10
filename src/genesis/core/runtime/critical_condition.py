@@ -4,7 +4,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Any, Literal, Mapping, Sequence
 
-Comparison = Literal["lt", "gt"]
+Comparison = Literal["lt", "gt", "abs_gt", "abs_lt"]
 CombineMode = Literal["any", "all"]
 
 _COMPARISON_ALIASES: dict[str, Comparison] = {
@@ -14,6 +14,20 @@ _COMPARISON_ALIASES: dict[str, Comparison] = {
     "gt": "gt",
     ">": "gt",
     "greater": "gt",
+    "abs_gt": "abs_gt",
+    "absgt": "abs_gt",
+    "abs>": "abs_gt",
+    "|x|>": "abs_gt",
+    "abs_lt": "abs_lt",
+    "abslt": "abs_lt",
+    "abs<": "abs_lt",
+    "|x|<": "abs_lt",
+}
+_COMPARISON_SYMBOLS: dict[Comparison, str] = {
+    "lt": "<",
+    "gt": ">",
+    "abs_gt": "|x| >",
+    "abs_lt": "|x| <",
 }
 _COMBINE_ALIASES: dict[str, CombineMode] = {
     "any": "any",
@@ -34,8 +48,12 @@ def _as_finite_float(value: Any) -> float | None:
 
 
 def _parse_comparison(raw: Any) -> Comparison | None:
-    key = str(raw or "").strip().lower()
+    key = str(raw or "").strip().lower().replace(" ", "")
     return _COMPARISON_ALIASES.get(key)
+
+
+def _comparison_symbol(comparison: Comparison) -> str:
+    return _COMPARISON_SYMBOLS.get(comparison, str(comparison))
 
 
 def _parse_combine(raw: Any) -> CombineMode:
@@ -55,10 +73,15 @@ class CriticalCondition:
             return False
         if self.comparison == "lt":
             return measured < self.threshold
-        return measured > self.threshold
+        if self.comparison == "gt":
+            return measured > self.threshold
+        magnitude = abs(measured)
+        if self.comparison == "abs_lt":
+            return magnitude < self.threshold
+        return magnitude > self.threshold
 
     def comparison_symbol(self) -> str:
-        return "<" if self.comparison == "lt" else ">"
+        return _comparison_symbol(self.comparison)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -76,7 +99,12 @@ class CriticalCondition:
         signal_key = str(raw.get("signalKey", "")).strip()
         comparison = _parse_comparison(raw.get("comparison"))
         threshold = _as_finite_float(raw.get("threshold"))
-        if not instrument_id or not signal_key or comparison is None or threshold is None:
+        if (
+            not instrument_id
+            or not signal_key
+            or comparison is None
+            or threshold is None
+        ):
             return None
         return cls(
             instrument_id=instrument_id,
@@ -116,7 +144,7 @@ class CriticalTrigger:
     matched_conditions: tuple[CriticalMatch, ...] = ()
 
     def reason_text(self) -> str:
-        symbol = "<" if self.comparison == "lt" else ">"
+        symbol = _comparison_symbol(self.comparison)
         return (
             "Critical ramping triggered: "
             f"{self.instrument_id}:{self.signal_key} = {self.measured_value:g} "
@@ -171,7 +199,9 @@ class CriticalRampingConfig:
             return cls()
         conditions: list[CriticalCondition] = []
         for item in list(raw.get("conditions", []) or []):
-            parsed = CriticalCondition.from_dict(item if isinstance(item, Mapping) else None)
+            parsed = CriticalCondition.from_dict(
+                item if isinstance(item, Mapping) else None
+            )
             if parsed is not None:
                 conditions.append(parsed)
         try:
@@ -187,7 +217,9 @@ class CriticalRampingConfig:
         )
 
     @classmethod
-    def from_job_definition(cls, job: Mapping[str, Any] | None) -> "CriticalRampingConfig":
+    def from_job_definition(
+        cls, job: Mapping[str, Any] | None
+    ) -> "CriticalRampingConfig":
         if not isinstance(job, Mapping):
             return cls()
         raw = job.get("criticalRamping")
@@ -210,10 +242,14 @@ def validate_critical_ramping_config(
     for condition in config.conditions:
         if not condition.instrument_id or not condition.signal_key:
             return "Critical ramping condition is missing an instrument or signal."
-        if available is not None and (
-            condition.instrument_id,
-            condition.signal_key,
-        ) not in available:
+        if (
+            available is not None
+            and (
+                condition.instrument_id,
+                condition.signal_key,
+            )
+            not in available
+        ):
             return (
                 "Critical ramping references unknown signal "
                 f"{condition.instrument_id}:{condition.signal_key}."

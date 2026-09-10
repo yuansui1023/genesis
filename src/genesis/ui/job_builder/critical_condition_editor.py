@@ -62,6 +62,8 @@ class _ConditionRow(QWidget):
 
         self.comparisonCombo.addItem("greater than (>)", userData="gt")
         self.comparisonCombo.addItem("less than (<)", userData="lt")
+        self.comparisonCombo.addItem("abs greater than (|x| >)", userData="abs_gt")
+        self.comparisonCombo.addItem("abs less than (|x| <)", userData="abs_lt")
         self.thresholdSpin.setButtonSymbols(QDoubleSpinBox.ButtonSymbols.NoButtons)
         self.thresholdSpin.setDecimals(16)
         self.thresholdSpin.setRange(-1e12, 1e12)
@@ -69,7 +71,9 @@ class _ConditionRow(QWidget):
 
         self.instrumentCombo.currentIndexChanged.connect(self._onInstrumentChanged)
         self.signalCombo.currentIndexChanged.connect(lambda _idx: self.changed.emit())
-        self.comparisonCombo.currentIndexChanged.connect(lambda _idx: self.changed.emit())
+        self.comparisonCombo.currentIndexChanged.connect(
+            lambda _idx: self.changed.emit()
+        )
         self.thresholdSpin.valueChanged.connect(lambda _v: self.changed.emit())
         self.removeButton.clicked.connect(lambda: self.removeRequested.emit(self))
         self._rebuildInstrumentCombo()
@@ -91,7 +95,9 @@ class _ConditionRow(QWidget):
         return ids
 
     def _signalsForInstrument(self, instrumentId: str) -> list[MeasurementSignalRef]:
-        return [ref for ref in self._availableSignals if ref.instrumentId == instrumentId]
+        return [
+            ref for ref in self._availableSignals if ref.instrumentId == instrumentId
+        ]
 
     def _rebuildInstrumentCombo(self) -> None:
         self.instrumentCombo.blockSignals(True)
@@ -153,9 +159,7 @@ class CriticalConditionEditor(QWidget):
         self._rows: list[_ConditionRow] = []
 
         self.enabledCheck = QCheckBox("Enable critical ramping", self)
-        self.holdCheck = QCheckBox(
-            "Hold all instrument settings when triggered", self
-        )
+        self.holdCheck = QCheckBox("Hold all instrument settings when triggered", self)
         self.combineCombo = NoWheelComboBox(self)
         self.consecutiveSpin = _NoWheelSpinBox(self)
         self.addConditionButton = QPushButton("Add Condition", self)

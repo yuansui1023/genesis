@@ -223,9 +223,10 @@ cooperative with `should_stop` for abort.
 ### 7.3) Critical ramping (runtime, not driver-local)
 
 Genesis can stop a run when a selected instrument measurement crosses a
-threshold (`src/genesis/core/runtime/critical_condition.py`). This is
-device-agnostic orchestration in the acquisition worker, not a per-driver
-feature.
+threshold (`src/genesis/core/runtime/critical_condition.py`). Supported
+comparisons are `gt`, `lt`, `abs_gt` (`|x| >`), and `abs_lt` (`|x| <`).
+This is device-agnostic orchestration in the acquisition worker, not a
+per-driver feature.
 
 Driver contract implications:
 

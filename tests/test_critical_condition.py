@@ -23,6 +23,27 @@ class CriticalConditionTests(unittest.TestCase):
         self.assertFalse(gt.evaluate(1.0))
         self.assertFalse(gt.evaluate(0.999))
 
+    def test_abs_gt_and_abs_lt_boundaries(self) -> None:
+        abs_gt = CriticalCondition("dmm", "currentA", "abs_gt", 1.0)
+        abs_lt = CriticalCondition("dmm", "currentA", "abs_lt", 1.0)
+        self.assertTrue(abs_gt.evaluate(1.001))
+        self.assertTrue(abs_gt.evaluate(-1.001))
+        self.assertFalse(abs_gt.evaluate(1.0))
+        self.assertFalse(abs_gt.evaluate(-1.0))
+        self.assertFalse(abs_gt.evaluate(0.5))
+        self.assertTrue(abs_lt.evaluate(0.999))
+        self.assertTrue(abs_lt.evaluate(-0.999))
+        self.assertFalse(abs_lt.evaluate(1.0))
+        self.assertFalse(abs_lt.evaluate(-1.0))
+        self.assertFalse(abs_lt.evaluate(1.5))
+        abs_cfg = CriticalRampingConfig(enabled=True, conditions=[abs_gt])
+        trigger = CriticalConditionMonitor(abs_cfg).evaluate(
+            {"dmm": {"currentA": -1.5}}
+        )
+        self.assertIsNotNone(trigger)
+        assert trigger is not None
+        self.assertIn("|x| >", trigger.reason_text())
+
     def test_nan_and_non_finite_do_not_match(self) -> None:
         cond = CriticalCondition("dmm", "currentA", "gt", 0.0)
         self.assertFalse(cond.evaluate(float("nan")))
@@ -88,9 +109,7 @@ class CriticalConditionTests(unittest.TestCase):
             enabled=False,
             conditions=[CriticalCondition("dmm", "i", "gt", 0.0)],
         )
-        self.assertIsNone(
-            CriticalConditionMonitor(cfg).evaluate({"dmm": {"i": 10.0}})
-        )
+        self.assertIsNone(CriticalConditionMonitor(cfg).evaluate({"dmm": {"i": 10.0}}))
 
     def test_from_job_definition_missing_and_aliases(self) -> None:
         self.assertFalse(CriticalRampingConfig.from_job_definition({}).enabled)
@@ -108,7 +127,19 @@ class CriticalConditionTests(unittest.TestCase):
                             "signalKey": "i",
                             "comparison": ">",
                             "threshold": 1.25,
-                        }
+                        },
+                        {
+                            "instrumentId": "dmm",
+                            "signalKey": "v",
+                            "comparison": "|x| >",
+                            "threshold": 0.5,
+                        },
+                        {
+                            "instrumentId": "dmm",
+                            "signalKey": "r",
+                            "comparison": "abs_lt",
+                            "threshold": 2.0,
+                        },
                     ],
                 }
             }
@@ -118,6 +149,8 @@ class CriticalConditionTests(unittest.TestCase):
         self.assertEqual(parsed.combine, "all")
         self.assertEqual(parsed.consecutive_hits_required, 2)
         self.assertEqual(parsed.conditions[0].comparison, "gt")
+        self.assertEqual(parsed.conditions[1].comparison, "abs_gt")
+        self.assertEqual(parsed.conditions[2].comparison, "abs_lt")
 
     def test_validate_and_merge_keys(self) -> None:
         disabled = CriticalRampingConfig()
