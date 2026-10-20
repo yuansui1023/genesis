@@ -7,6 +7,7 @@ Genesis is a PySide6 desktop application for configuring and running automated i
 It currently includes built-in drivers for:
 - Keysight/Agilent B29xx SMU family
 - Agilent/HP 34401A 6½ digit digital multimeter (VISA/SCPI)
+- HP 4145B semiconductor parameter analyzer (one VISA session; SMU1–SMU4, VS1/VS2, VM1/VM2)
 - Stanford Research SR850 lock-in amplifier
 - American Magnetics Inc. Model 420 superconducting magnet power supply programmer
 - VirtualMEMS TCP controller for the external `mems_control_app`
@@ -101,6 +102,32 @@ python -m genesis.app.main
 - Trigger details are written next to the run data file as `*_critical_trigger.json`.
 - Heatmap pop-up is intended for larger inspection while embedded view stays compact.
 - For simulation/testing without hardware, use dummy transport paths in the runtime stack.
+- For the HP 4145B, use one instrument instance at factory address
+  `GPIB0::17::INSTR`. Genesis sweeps in software; the driver does not program
+  VAR1/VAR2, System Mode pages, disk, HP-GL, or COM. SMU voltage/current and
+  VS voltage are the sweepable setpoints. Outputs start off, ranges start at
+  AUTO, and integration starts at MEDIUM (`IT2`); those defaults are
+  driver-chosen, not factory presets. A disabled SMU accepts new levels
+  without sourcing. Enabling it, or changing an enabled source, sends a full
+  `DV`/`DI` with range, level, and compliance. The outer ±100 V / ±100 mA
+  bounds are not a rectangle: 20 V / 40 V / 100 V ranges allow 100 mA / 50 mA
+  / 20 mA, and current-source voltage compliance follows the subranges at or
+  below 20 mA, above 20 mA through 50 mA, and above 50 mA through 100 mA.
+  VS 0 V is not a disconnect. VM1/VM2 are `TV5`/`TV6`. Readings are sequential spot measurements, not a
+  simultaneous sample. Only status `N` is returned; compliance, saturation,
+  oscillation, and interval-too-short statuses are errors and are omitted
+  from that sample. The acquisition loop logs the error and continues, so
+  this is not a hardware interlock. User Mode will not measure with the
+  fixture lid open; the driver does not bypass that. Abort turns every SMU
+  off and programs both VS outputs to 0 V unless `safeConfig` explicitly
+  holds a valid bias. Stop and Initialize do not call `applySafeState`; with
+  an empty `safeConfig` they reapply the job config, which can leave an SMU
+  enabled. Put output-off and VS 0 V in `safeConfig` when Stop must remove
+  bias. The default VISA timeout is 10 s and `visaClearOnOpen` is false,
+  because a device clear leaves User Mode. A read in progress can delay Abort
+  until that timeout. See the field help and the
+  [HP 4145B Operation Manual](https://web.mit.edu/scholvin/www/mq753/Documents/probe.HP4145B_Manual.pdf)
+  (part 04145-90310, April 1989).
 - For the Agilent/HP 34401A, the factory address is `GPIB0::22::INSTR`.
   Select one measurement function and request its matching signal; other signal
   keys are ignored without switching functions. A batch returns its arithmetic

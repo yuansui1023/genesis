@@ -7,6 +7,8 @@ It is based on current working drivers:
 - `src/genesis/instruments/sr850/driver.py`
 - `src/genesis/instruments/agilent34401a/driver.py` (example of a single-function
   DMM with dependent configuration replay and batched readings)
+- `src/genesis/instruments/hp4145b/driver.py` (example of a native two-letter
+  HP-IB analyzer: one session, several source channels, status-prefixed readings)
 - `src/genesis/instruments/ami420/driver.py` (example of a controller-managed
   ramp that uses the async settle hook)
 - `src/genesis/instruments/virtual_mems/driver.py` (example of a TCP JSON Lines
@@ -283,6 +285,55 @@ strings unless a specific instrument requires a longer form. This matches other
 Genesis drivers (e.g. Keysight-style `:SOUR:...:CURR`) and typical programmer
 manuals. Document the exact strings used in the class docstring or field
 `helpText` where users map UI to hardware.
+
+### 8.1) Native HP-IB command sets, shared channels, and status prefixes
+
+Do not borrow SCPI, `*RST`, `*IDN?`, or another model's commands when the
+manual specifies a different remote language. The HP 4145B uses two-letter
+User Mode commands (`US`, `DV`/`DI`, `DS`, `TI`/`TV`, `IT1`–`IT3`, `BC`)
+from its operation manual, part 04145-90310.
+
+Model that kind of instrument as one Genesis instance and one transport
+session. Putting SMU1–SMU4 on four instruments that share a GPIB address
+splits mode, buffers, and command ordering across sessions. Flat keys such
+as `smu1ForceVoltageLevelV` let Genesis sweep channels independently.
+
+`MainWindow` initialization, natural stop, and controlled stop do **not**
+call `instrument.initialize`. They apply safe or job keys through
+`applyConfigValue` (swept setpoints first), then `finalizeInitialization`
+on initialize only. The first real command has to establish remote mode
+idempotently. Repeat that setup after a transport error, not on every
+setpoint. Do not device-clear to recover a stale reply: on the 4145B a
+device clear leaves User Mode and restores initial control settings. `BC`
+only clears the instrument data buffer. `visaClearOnOpen` defaults false
+for that reason. `BaseTransport` has no flush or clear hook, so a timed-out
+read can leave bytes in the controller; the next operation re-sends `US`
+and cannot discard those bytes.
+
+Validate the merged channel configuration before mutating `jobConfig` or
+writing. A full `DV`/`DI` enables the output, so a disabled channel only
+stores level, range, compliance, and mode. Enabling, and later live
+updates, send the complete command. A command that carries range, level,
+and compliance does not by itself disable software slew; each slew step is
+one complete command while the output is on. Levels applied while the
+output is still off do not source. The 4145B has no VS output-off syntax;
+`DS` to 0 V is not an open circuit.
+
+Parse a status-prefixed reading. Do not strip a fixed number of characters
+and call `float`. For the 4145B, only status `N`, the expected channel
+letter, the expected `V`/`I` character, and a finite value are returned.
+`C`, `T`, `L`, `V`, and `X` raise. `AcquisitionWorker._sampleAllInstruments`
+catches that exception, logs it, and continues the sweep without a sample
+from that instrument, so a status error does not itself enter safe state.
+Do not retrigger to hide the failure. Reads must not turn outputs off:
+critical-ramping hold intentionally skips `applySafeState`.
+
+`applySafeState` still has to try every channel after one write fails and
+then report the failures. An empty safe config must not keep a live output
+just because `jobConfig` enables it. An explicit safe value is what holds
+a bias, and an explicit bias that fails validation falls back to shutdown
+instead of being partially applied. Document fixture interlocks that the
+driver does not bypass.
 
 ## 9) Measurement Read Pattern
 

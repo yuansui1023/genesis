@@ -9,6 +9,7 @@ _BUILT_IN_DRIVER_MODULES = [
     "genesis.instruments.agilent34401a.driver",
     "genesis.instruments.ami420.driver",
     "genesis.instruments.b29xx.driver",
+    "genesis.instruments.hp4145b.driver",
     "genesis.instruments.sr850.driver",
     "genesis.instruments.virtual_mems.driver",
 ]
