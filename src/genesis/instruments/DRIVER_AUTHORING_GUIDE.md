@@ -9,6 +9,9 @@ It is based on current working drivers:
   DMM with dependent configuration replay and batched readings)
 - `src/genesis/instruments/hp4145b/driver.py` (example of a native two-letter
   HP-IB analyzer: one session, several source channels, status-prefixed readings)
+- `src/genesis/instruments/yokogawa7651/driver.py` (example of a source whose
+  settings are buffered until an execute command, with setting readback
+  rather than a measurement)
 - `src/genesis/instruments/ami420/driver.py` (example of a controller-managed
   ramp that uses the async settle hook)
 - `src/genesis/instruments/virtual_mems/driver.py` (example of a TCP JSON Lines
@@ -334,6 +337,42 @@ just because `jobConfig` enables it. An explicit safe value is what holds
 a bias, and an explicit bias that fails validation falls back to shutdown
 instead of being partially applied. Document fixture interlocks that the
 driver does not bypass.
+
+### 8.2) Buffered execute and setting readback (YOKOGAWA 7651)
+
+Some sources accept a setting into a buffer and change the hardware only
+when a separate execute command arrives. On the 7651, `F`, `R`, `S`, `SA`,
+and `O` wait for `E` (or GP-IB GET). `S1.0` by itself must not be treated as
+an executed output. Put the execute in the same program message, for example
+`S+1E+0E` or `O0E`, and update the driver's executed-state cache only after
+that write returns. Do not leave a buffered `F` or `R` for a later unrelated
+`E`. `LV` and `LA` are not in that trigger list; send the limiter that
+matches the active function and do not append `E` without a manual statement.
+The 7651 rejects a voltage limit in voltage mode and a current limit in
+current mode (error 11).
+
+A command that carries the new source value plus execute is still one slew
+step. Do not replace Genesis software slew with the instrument's internal
+program sweep.
+
+If the only query is the programmed setting, name it as a setting in the
+signal key, label, and README. Do not plot it as terminal voltage, load
+current, or resistance. Return it only for the active function, and expose
+the instrument's own output-state bit when off must be distinguished from
+zero. Parse a status header before converting the number; an overload header
+is not a normal float.
+
+Multi-line replies such as the 7651 `OS` block must be read through the
+documented terminator (`END`). `query` reads one line and leaves the rest
+for the next call. If the block is short, mark the session unsynchronized
+and require a new VISA session. `BaseTransport` has no flush, and a device
+clear on this instrument restores the power-on panel.
+
+`MainWindow` still applies keys one at a time and does not call
+`initialize`. Session preparation (`RU0`, header, terminator) has to be
+idempotent on the first real command. After a failed write, do not keep
+using the old executed-state cache, and do not turn the output on from
+`readMeasurements`.
 
 ## 9) Measurement Read Pattern
 

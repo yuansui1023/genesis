@@ -12,6 +12,7 @@ _BUILT_IN_DRIVER_MODULES = [
     "genesis.instruments.hp4145b.driver",
     "genesis.instruments.sr850.driver",
     "genesis.instruments.virtual_mems.driver",
+    "genesis.instruments.yokogawa7651.driver",
 ]
 
 

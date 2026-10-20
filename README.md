@@ -8,6 +8,7 @@ It currently includes built-in drivers for:
 - Keysight/Agilent B29xx SMU family
 - Agilent/HP 34401A 6½ digit digital multimeter (VISA/SCPI)
 - HP 4145B semiconductor parameter analyzer (one VISA session; SMU1–SMU4, VS1/VS2, VM1/VM2)
+- YOKOGAWA 7651 programmable DC source (GP-IB, manual voltage/current source)
 - Stanford Research SR850 lock-in amplifier
 - American Magnetics Inc. Model 420 superconducting magnet power supply programmer
 - VirtualMEMS TCP controller for the external `mems_control_app`
@@ -128,6 +129,31 @@ python -m genesis.app.main
   until that timeout. See the field help and the
   [HP 4145B Operation Manual](https://web.mit.edu/scholvin/www/mq753/Documents/probe.HP4145B_Manual.pdf)
   (part 04145-90310, April 1989).
+- For the YOKOGAWA 7651, set the VISA resource yourself. The GP-IB address is
+  chosen on the front panel and kept across power-off; the manual does not
+  publish a factory address. A resource looks like `GPIB0::1::INSTR`. The
+  instrument is a source, not a meter. `sourceVoltageSettingV` and
+  `sourceCurrentSettingA` are the values the instrument reports for its
+  setting, not measured terminal voltage or load current. Read
+  `outputEnabled` as well: output OFF does not mean the setting is zero, and
+  a setting of zero does not mean the output is off. Only the active
+  function's setting is returned. Sweep the voltage or current setting.
+  Fixed ranges use `S` and `E` together; auto-range uses `SA` and can enter
+  the 10 mV or 100 mV range, where the current limiter does not operate.
+  Voltage mode sends `LA` in whole milliamps from 5 to 120. Current mode
+  sends `LV` in whole volts from 1 to 30. The other limit is stored until
+  the function changes. Defaults are 0 V, the 1 V range, output off, a 1 V
+  voltage limit, and a 5 mA current limit. The 1 V range matches the manual's
+  power-on function; the 5 mA and 1 V limits are driver choices, tighter than
+  the manual's 120 mA and 30 V. Output off is not an open circuit. Abort
+  sends `RU0` and `O0E` unless `safeConfig` explicitly holds a valid bias.
+  Stop and Initialize do not call `applySafeState`; with an empty
+  `safeConfig` they reapply the job, which can leave the output on. The
+  default timeout is 10 s and `visaClearOnOpen` is false, because a device
+  clear restores the power-on panel and blocks communication for a few
+  seconds. Critical ramping on these setting readbacks is not a measurement
+  of the DUT. See
+  [IM 7651-01E](https://cdn.tmi.yokogawa.com/IM7651-01E.is.pdf).
 - For the Agilent/HP 34401A, the factory address is `GPIB0::22::INSTR`.
   Select one measurement function and request its matching signal; other signal
   keys are ignored without switching functions. A batch returns its arithmetic
