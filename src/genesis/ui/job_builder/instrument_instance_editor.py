@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
 
 from genesis.core.instrument.base_instrument import BaseInstrument
 from genesis.core.instrument.config_field import ConfigFieldDefinition
+from genesis.core.job.variable_names import makeVariableNicknames
 from genesis.core.transport.transport_factory import getAvailableTransportKeys
 from genesis.ui.no_wheel_combo_box import NoWheelComboBox
 from genesis.ui.job_builder.instrument_config_form import InstrumentConfigForm
@@ -22,6 +23,7 @@ from genesis.ui.job_builder.instrument_config_form import InstrumentConfigForm
 
 class InstrumentInstanceEditor(QWidget):
     instanceIdChanged = Signal(str)
+    variablesChanged = Signal()
 
     def __init__(
         self,
@@ -43,6 +45,11 @@ class InstrumentInstanceEditor(QWidget):
             self.instrumentType.getJobConfigFields()
         )
         self._sweptConfigKeys: set[str] = set()
+        rawNames = self.initialValues.get("variableNicknames")
+        self.variableNicknames = makeVariableNicknames(
+            [(key, label) for key, label, _role in self.getVariableDefinitions()],
+            rawNames if isinstance(rawNames, dict) else {},
+        )
 
         rootLayout = QVBoxLayout(self)
         rootLayout.setContentsMargins(0, 0, 0, 0)
@@ -106,6 +113,7 @@ class InstrumentInstanceEditor(QWidget):
             for signalKey, label in measurementSignals:
                 cb = QCheckBox(label, groupBox)
                 cb.setChecked(signalKey in measurementsInitial)
+                cb.toggled.connect(lambda _checked: self.variablesChanged.emit())
                 self._measurementCheckboxes.append((signalKey, cb))
                 measurementCol.addWidget(cb)
             measurementCol.addStretch(1)
@@ -180,11 +188,26 @@ class InstrumentInstanceEditor(QWidget):
             "config": self.configForm.getValues(),
             "safeConfig": self.safeConfigForm.getValues(),
             "measurements": measurements,
+            "variableNicknames": dict(self.variableNicknames),
         }
         raw_ts = self.initialValues.get("transportSettings")
         if isinstance(raw_ts, dict):
             result["transportSettings"] = dict(raw_ts)
         return result
+
+    def getVariableDefinitions(self) -> list[tuple[str, str, str]]:
+        signals = dict(self.instrumentType.getAvailableMeasurementSignals())
+        variables: list[tuple[str, str, str]] = []
+        for field in self._fields:
+            role = "Sweep" if field.sweepable else "Setting"
+            if field.key in signals:
+                role += " / Readback"
+            variables.append((field.key, field.label, role))
+        fieldKeys = {field.key for field in self._fields}
+        for key, label in signals.items():
+            if key not in fieldKeys:
+                variables.append((key, label, "Readback"))
+        return variables
 
     def getMeasuredSignals(self) -> list[str]:
         measurements: list[str] = []

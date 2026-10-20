@@ -408,6 +408,28 @@ with `visaClearOnOpen` enabled attempts a clear, but the transport ignores clear
 failures. Confirm recovery or use a supported controller device clear before
 reinitializing.
 
+### 9.2) Job variable nicknames
+
+The Job Builder's Variable Names tab maps every declared config field and
+measurement signal to a per-instrument display nickname. Driver field/signal
+labels should remain concise and meaningful, including units where applicable;
+they supply defaults for variables without a known short name. Channel-specific
+keys retain channel identity in the default nickname (for example,
+`smu1ForceVoltageLevelV` becomes `SMU1_V_set`).
+
+Keep setting readbacks distinct from measured quantities in default names. For
+example, the 7651's `sourceVoltageSettingV` becomes `V_set_readback`, while its
+commanded `forceVoltageLevelV` is `V_set`. The mapping table uses Readback for
+signals because a signal can report a setting or a status rather than a physical
+measurement. The shared `outputEnabled` config/signal key has one nickname.
+
+Nicknames are saved as `instruments[].variableNicknames`, a mapping from stable
+driver keys to names. Drivers continue receiving their original keys. Plot
+expressions show nicknames in the editor and serialize their original references;
+runtime plotting resolves labels from job metadata. Renaming does not alter
+acquisition, expression dependencies, or raw export keys. Jobs without nickname
+metadata receive defaults, and cloned instruments copy their mapping independently.
+
 ## 10) Registration Boilerplate
 
 Each `driver.py` should include:

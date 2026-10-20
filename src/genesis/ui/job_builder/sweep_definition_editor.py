@@ -69,6 +69,7 @@ class _NoWheelDoubleSpinBox(QDoubleSpinBox):
 class SweepVariableRef:
     instrumentId: str
     key: str
+    label: str = ""
 
 
 class SweepDefinitionEditor(QWidget):
@@ -332,7 +333,14 @@ class SweepDefinitionEditor(QWidget):
         current = combo.currentData()
         combo.clear()
         for key in byInstrument.get(instrumentId, []):
-            label = "time" if (instrumentId == "__time__" and key == "time") else key
+            label = next(
+                (
+                    ref.label
+                    for ref in self._availableVariables
+                    if ref.instrumentId == instrumentId and ref.key == key and ref.label
+                ),
+                key,
+            )
             combo.addItem(label, userData=key)
         self._restoreData(combo, current)
 

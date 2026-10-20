@@ -16,6 +16,7 @@ It currently includes built-in drivers for:
 ## Core Functionalities
 
 - Build jobs from a GUI (instrument instances, configs, sweep definitions, plot definitions).
+- Name instrument variables on a dedicated Variable Names tab; use those nicknames in plot selectors, expressions, axes, and legends.
 - Run 1D and 2D sweeps with live plotting.
 - Live XY plots and 2D heatmaps (embedded and pop-up large view).
 - Configurable sweep slew limiting for safer setpoint transitions.
@@ -86,16 +87,27 @@ python -m genesis.app.main
 
 1. Start the app and create/load a job.
 2. Add instrument instances and configure fields from the driver forms.
-3. Define sweep settings (1D or 2D).
-4. Optionally enable Critical Ramping on the Sweep tab: choose measurement conditions (`>`, `<`, `|x| >`, `|x| <`), whether any/all must match, consecutive-sample debounce, and whether to hold instrument settings on trigger.
-5. Define plots (XY and/or heatmap).
-6. Click Initialize to apply safe initialization state.
-7. Click Start Sweep to begin acquisition.
-8. Use Stop for controlled return-to-safe flow, or Abort for immediate stop.
-9. Save job JSON to `~/Documents/Genesis/jobs/` and run outputs to `~/Documents/Genesis/runs/`.
+3. Open Variable Names (between Instruments and Sweep), choose an instrument, and edit nicknames for its settings and measurement signals. Defaults include `V_set`, `I_meas`, and `SMU1_V_set`. Search the table or use Reset to Defaults for the selected instrument.
+4. Define sweep settings (1D or 2D).
+5. Optionally enable Critical Ramping on the Sweep tab: choose measurement conditions (`>`, `<`, `|x| >`, `|x| <`), whether any/all must match, consecutive-sample debounce, and whether to hold instrument settings on trigger.
+6. Define plots (XY and/or heatmap). Variable choices and expression insertion use nicknames, such as `b29xx-1:I_meas`; axes and legends use the same names. An explicitly entered curve name still takes precedence.
+7. Click Initialize to apply safe initialization state.
+8. Click Start Sweep to begin acquisition.
+9. Use Stop for controlled return-to-safe flow, or Abort for immediate stop.
+10. Save job JSON to `~/Documents/Genesis/jobs/` and run outputs to `~/Documents/Genesis/runs/`.
 
 ### Notes for New Users
 
+- Variable nicknames are saved per instrument in the job and can contain letters
+  (including Chinese), numbers, and underscores; they cannot start with a number
+  and must be unique within that instrument. Cloned instruments copy their names
+  and can then be edited independently. Older jobs receive defaults automatically.
+  Changing a nickname keeps plot selections and formulas attached to the same
+  variable. Job expressions, instrument commands, and raw export column keys keep
+  their stable original references.
+  For the 7651, `V_set`/`I_set` are commanded settings and
+  `V_set_readback`/`I_set_readback` are instrument-reported settings, not measured
+  terminal voltage or load current. `Output_on` remains a separate signal.
 - If you abort a run, re-initialize before starting another sweep.
 - Critical ramping is a software-layer stop. It is not a hardware interlock or a substitute for instrument protection settings. Checks run after each acquired sample, and also during software slew steps and `waitForSetpoint` progress callbacks when the mode is enabled, so trigger latency follows that sampling cadence.
 - If critical ramping triggers with **Hold instrument settings** enabled, outputs stay at their triggered values. Start Sweep is disabled until you leave that state: Stop ramps swept outputs back to safe state, Abort applies safe state immediately, and Initialize rebuilds from the job's safe/config values.

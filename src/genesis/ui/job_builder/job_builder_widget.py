@@ -6,7 +6,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSignalBlocker, Qt
 from PySide6.QtWidgets import (
     QFileDialog,
     QGroupBox,
@@ -24,12 +24,14 @@ from PySide6.QtWidgets import (
 
 from genesis.app.user_dirs import genesis_jobs_dir
 from genesis.core.instrument.registry import InstrumentRegistry
+from genesis.core.job.variable_names import axisDisplayLabel, defaultVariableNickname
 from genesis.core.runtime.expression_eval import ExpressionError, compileExpression
 from genesis.ui.job_builder.critical_condition_editor import (
     CriticalConditionEditor,
     MeasurementSignalRef,
 )
 from genesis.ui.job_builder.instrument_instance_editor import InstrumentInstanceEditor
+from genesis.ui.job_builder.variable_mapping_editor import VariableMappingEditor
 from genesis.ui.job_builder.plot_definition_editor import (
     PlotDefinitionEditor,
     PlotVariableRef,
@@ -101,11 +103,16 @@ class JobBuilderWidget(QWidget):
         contentLayout.addLayout(buttonRow)
 
         sectionTabs = QTabWidget(contentWidget)
+        self.sectionTabs = sectionTabs
         contentLayout.addWidget(sectionTabs, 1)
 
         instrumentsTab = QWidget(sectionTabs)
         instrumentsTabLayout = QVBoxLayout(instrumentsTab)
         sectionTabs.addTab(instrumentsTab, "Instruments")
+
+        self.variableMappingEditor = VariableMappingEditor(sectionTabs)
+        sectionTabs.addTab(self.variableMappingEditor, "Variable Names")
+        self.variableMappingEditor.changed.connect(self._onVariableNicknamesChanged)
 
         sweepsTab = QWidget(sectionTabs)
         sweepsTabLayout = QVBoxLayout(sweepsTab)
@@ -235,6 +242,7 @@ class JobBuilderWidget(QWidget):
 
     def _clearInstanceEditors(self) -> None:
         self._instanceEditors.clear()
+        self.variableMappingEditor.setInstruments([])
         while self.instancesTabWidget.count() > 0:
             widget = self.instancesTabWidget.widget(0)
             self.instancesTabWidget.removeTab(0)
@@ -318,6 +326,7 @@ class JobBuilderWidget(QWidget):
             editor.instanceIdChanged.connect(
                 lambda _text: self._refreshVariableDependentEditors()
             )
+            editor.variablesChanged.connect(self._refreshVariableDependentEditors)
 
         self._refreshVariableDependentEditors()
 
@@ -411,6 +420,7 @@ class JobBuilderWidget(QWidget):
         editor.instanceIdChanged.connect(
             lambda _text: self._refreshVariableDependentEditors()
         )
+        editor.variablesChanged.connect(self._refreshVariableDependentEditors)
         self._refreshVariableDependentEditors()
 
     def _onCloneInstrumentClicked(self) -> None:
@@ -443,6 +453,7 @@ class JobBuilderWidget(QWidget):
         editor.instanceIdChanged.connect(
             lambda _text: self._refreshVariableDependentEditors()
         )
+        editor.variablesChanged.connect(self._refreshVariableDependentEditors)
         self._refreshVariableDependentEditors()
 
     def _getNextInstanceIndex(self, instrumentTypeKey: str) -> int:
@@ -543,7 +554,9 @@ class JobBuilderWidget(QWidget):
                 seen.add(pair)
                 refs.append(
                     PlotVariableRef(
-                        instrumentId=instId, key=key, label=f"{key} (measurement)"
+                        instrumentId=instId,
+                        key=key,
+                        label=instEditor.variableNicknames[key],
                     )
                 )
             for key in instEditor.getAvailableSweepConfigKeys():
@@ -553,7 +566,9 @@ class JobBuilderWidget(QWidget):
                 seen.add(pair)
                 refs.append(
                     PlotVariableRef(
-                        instrumentId=instId, key=key, label=f"{key} (sweep)"
+                        instrumentId=instId,
+                        key=key,
+                        label=instEditor.variableNicknames[key],
                     )
                 )
         for sweepEditor in self._sweepEditors:
@@ -580,7 +595,7 @@ class JobBuilderWidget(QWidget):
                         PlotVariableRef(
                             instrumentId=instId,
                             key=key,
-                            label="time (sweep)",
+                            label="Time",
                         )
                     )
                 else:
@@ -588,7 +603,7 @@ class JobBuilderWidget(QWidget):
                         PlotVariableRef(
                             instrumentId=instId,
                             key=key,
-                            label=f"{key} (sweep)",
+                            label=self._variableNickname(instId, key),
                         )
                     )
         return refs
@@ -611,11 +626,7 @@ class JobBuilderWidget(QWidget):
             key = str(axis.get("key", ""))
             if not instId or not key:
                 continue
-            label = (
-                "time (sweep)"
-                if (instId == "__time__" and key == "time")
-                else f"{key} (sweep)"
-            )
+            label = self._variableNickname(instId, key)
             refs.append(PlotVariableRef(instrumentId=instId, key=key, label=label))
         return refs
 
@@ -631,13 +642,37 @@ class JobBuilderWidget(QWidget):
         self._ensureSingleSweepEditor()
         available = self._getSweepVariableRefs()
         for ed in self._sweepEditors:
-            ed.setAvailableVariables(available)
+            # Rebuilding combo boxes must not publish temporary axis selections.
+            with QSignalBlocker(ed):
+                ed.setAvailableVariables(available)
 
     def _refreshVariableDependentEditors(self) -> None:
+        self.variableMappingEditor.setInstruments(self._instanceEditors)
         self._refreshPlotEditorsAvailableVariables()
         self._refreshSweepEditorsAvailableVariables()
         self._refreshCriticalEditorAvailableSignals()
         self._applySweepSelectionToInstrumentEditors()
+
+    def _variableNickname(self, instrumentId: str, key: str) -> str:
+        for editor in self._instanceEditors:
+            if editor.getInstanceId() == instrumentId:
+                return editor.variableNicknames.get(key, defaultVariableNickname(key))
+        return defaultVariableNickname(key)
+
+    def _variableNicknames(self) -> dict[tuple[str, str], str]:
+        return {
+            ("__time__", "time"): "Time",
+            **{
+                (editor.getInstanceId(), key): nickname
+                for editor in self._instanceEditors
+                for key, nickname in editor.variableNicknames.items()
+            },
+        }
+
+    def _onVariableNicknamesChanged(self) -> None:
+        self._refreshPlotEditorsAvailableVariables()
+        self._refreshSweepEditorsAvailableVariables()
+        self._refreshCriticalEditorAvailableSignals()
 
     def _getMeasurementSignalRefs(self) -> list[MeasurementSignalRef]:
         refs: list[MeasurementSignalRef] = []
@@ -653,7 +688,7 @@ class JobBuilderWidget(QWidget):
                     MeasurementSignalRef(
                         instrumentId=instId,
                         key=str(key),
-                        label=str(label),
+                        label=instEditor.variableNicknames.get(str(key), str(label)),
                     )
                 )
         return refs
@@ -668,13 +703,7 @@ class JobBuilderWidget(QWidget):
             return title
 
         def _axisLabel(axisDef: Any) -> str:
-            if isinstance(axisDef, dict) and axisDef.get("type") == "time":
-                return "time"
-            if isinstance(axisDef, dict) and axisDef.get("type") == "var":
-                return f"{axisDef.get('instrumentId')}:{axisDef.get('key')}"
-            if isinstance(axisDef, dict) and axisDef.get("type") == "expr":
-                return str(axisDef.get("expr", "")).strip() or "expr"
-            return "?"
+            return axisDisplayLabel(axisDef, self._variableNicknames())
 
         renderMode = str(definition.get("renderMode", "scatter") or "scatter")
         if renderMode == "heatmap":
@@ -712,12 +741,18 @@ class JobBuilderWidget(QWidget):
 
     def _getSweepVariableRefs(self) -> list[SweepVariableRef]:
         refs: list[SweepVariableRef] = [
-            SweepVariableRef(instrumentId="__time__", key="time")
+            SweepVariableRef(instrumentId="__time__", key="time", label="Time (s)")
         ]
         for instEditor in self._instanceEditors:
             instId = instEditor.getInstanceId()
             for key in instEditor.getAvailableSweepConfigKeys():
-                refs.append(SweepVariableRef(instrumentId=instId, key=key))
+                refs.append(
+                    SweepVariableRef(
+                        instrumentId=instId,
+                        key=key,
+                        label=instEditor.variableNicknames[key],
+                    )
+                )
         return refs
 
     def _ensureSingleSweepEditor(self, mode: str = "1d") -> None:

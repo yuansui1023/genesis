@@ -28,11 +28,13 @@ class HeatmapPlotWidget(QWidget):
         yPointCount: int | None = None,
         allowPopout: bool = True,
         parent: QWidget | None = None,
+        zLabel: str = "",
     ) -> None:
         super().__init__(parent)
         self._title = str(title)
         self._xLabel = str(xLabel)
         self._yLabel = str(yLabel)
+        self._zLabel = str(zLabel)
         self._xByKey: dict[str, float] = {}
         self._yByKey: dict[str, float] = {}
         self._zByKeyPair: dict[tuple[str, str], float] = {}
@@ -91,7 +93,7 @@ class HeatmapPlotWidget(QWidget):
         self._image = pg.ImageItem()
         self.plotWidget.addItem(self._image)
         self._bar = pg.ColorBarItem(
-            values=(0.0, 1.0), colorMap=pg.colormap.get("viridis")
+            values=(0.0, 1.0), colorMap=pg.colormap.get("viridis"), label=self._zLabel
         )
         self._bar.setImageItem(self._image)
 
@@ -294,6 +296,7 @@ class HeatmapPlotWidget(QWidget):
             yPointCount=self._gridRows,
             allowPopout=False,
             parent=dialog,
+            zLabel=self._zLabel,
         )
         dialogLayout.addWidget(popupHeatmap)
         dialog.resize(980, 980)

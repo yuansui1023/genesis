@@ -21,6 +21,7 @@ from genesis.core.runtime.expression_eval import (
     compileExpression,
     tokenToRefString,
 )
+from genesis.core.job.variable_names import canonicalExpression, displayExpression
 from genesis.ui.no_wheel_combo_box import NoWheelComboBox
 
 
@@ -212,7 +213,16 @@ class PlotDefinitionEditor(QWidget):
         self.zExprInsertButton.setFocusPolicy(Qt.FocusPolicy.NoFocus)
 
     def setAvailableVariables(self, availableVariables: list[PlotVariableRef]) -> None:
+        # Keep expression identity when a nickname changes or a signal is removed.
+        edits = (
+            [self.zExprLineEdit]
+            if self._renderMode == "heatmap"
+            else [row["expr"] for row in self._yRows]
+        )
+        expressions = [(edit, self._canonicalExpression(edit.text())) for edit in edits]
         self._availableVariables = availableVariables
+        for edit, expression in expressions:
+            edit.setText(self._displayExpression(expression))
 
         if self._renderMode == "heatmap":
             hxCurrent = self.heatmapXVarCombo.currentData()
@@ -273,8 +283,17 @@ class PlotDefinitionEditor(QWidget):
             if ref.instrumentId == "__time__" and ref.key == "time":
                 if not allowTime or not includeTime:
                     continue
-            display = f"{'Time' if ref.instrumentId == '__time__' else ref.instrumentId}:{ref.key}"
+            display = (
+                "Time (s)"
+                if ref.instrumentId == "__time__"
+                else f"{ref.instrumentId}:{ref.label or ref.key}"
+            )
             combo.addItem(display, userData=(ref.instrumentId, ref.key))
+            combo.setItemData(
+                combo.count() - 1,
+                f"{ref.instrumentId}:{ref.key}",
+                Qt.ItemDataRole.ToolTipRole,
+            )
         self._restoreData(combo, current)
 
     def _repopulateAxisSweepCombos(self) -> None:
@@ -320,12 +339,27 @@ class PlotDefinitionEditor(QWidget):
                 continue
             token = tokenToRefString(ref.instrumentId, ref.key)
             label = (
-                "time (sweep)"
+                "Time (s)"
                 if (ref.instrumentId == "__time__" and ref.key == "time")
                 else (ref.label or ref.key)
             )
             varCombo.addItem(label, userData=token)
+            varCombo.setItemData(
+                varCombo.count() - 1, token, Qt.ItemDataRole.ToolTipRole
+            )
         self._restoreData(varCombo, current)
+
+    def _nicknameMap(self) -> dict[tuple[str, str], str]:
+        return {
+            (ref.instrumentId, ref.key): ref.label or ref.key
+            for ref in self._availableVariables
+        }
+
+    def _canonicalExpression(self, expression: str) -> str:
+        return canonicalExpression(expression, self._nicknameMap())
+
+    def _displayExpression(self, expression: str) -> str:
+        return displayExpression(expression, self._nicknameMap())
 
     def _availableRefPairs(self) -> set[tuple[str, str]]:
         return {(ref.instrumentId, ref.key) for ref in self._availableVariables}
@@ -335,8 +369,8 @@ class PlotDefinitionEditor(QWidget):
         if self._renderMode == "heatmap":
             xRef = self.heatmapXVarCombo.currentData()
             yRef = self.heatmapYVarCombo.currentData()
-            zExpr = self.zExprLineEdit.text().strip()
-            zName = self.zNameLineEdit.text().strip() or "Z"
+            zExpr = self._canonicalExpression(self.zExprLineEdit.text().strip())
+            zName = self.zNameLineEdit.text().strip()
 
             xDef: dict[str, Any] = {"type": "var", "instrumentId": "", "key": ""}
             yDef: dict[str, Any] = {"type": "var", "instrumentId": "", "key": ""}
@@ -489,12 +523,16 @@ class PlotDefinitionEditor(QWidget):
             ySeries = definition.get("ySeries", [])
             if isinstance(ySeries, list) and ySeries and isinstance(ySeries[0], dict):
                 zDef = ySeries[0]
-                self.zExprLineEdit.setText(str(zDef.get("expr", "")))
+                self.zExprLineEdit.setText(
+                    self._displayExpression(str(zDef.get("expr", "")))
+                )
                 self.zNameLineEdit.setText(str(zDef.get("name", "")))
             else:
                 yDefLegacy = definition.get("y", {})
                 if isinstance(yDefLegacy, dict):
-                    self.zExprLineEdit.setText(str(yDefLegacy.get("expr", "")))
+                    self.zExprLineEdit.setText(
+                        self._displayExpression(str(yDefLegacy.get("expr", "")))
+                    )
             self._onHeatmapZExprEdited()
             return
 
@@ -532,17 +570,17 @@ class PlotDefinitionEditor(QWidget):
         if not token:
             return
         self._insertTokenIntoFocusedLineEdit(
-            token, fallback=self._activeYExprLineEdit
+            self._displayExpression(token), fallback=self._activeYExprLineEdit
         )
 
     def _insertHeatmapZToken(self) -> None:
         token = str(self.zInsertVariableCombo.currentData() or "")
         if not token:
             return
-        self._insertTokenIntoFocusedLineEdit(token)
+        self._insertTokenIntoFocusedLineEdit(self._displayExpression(token))
 
     def _onHeatmapZExprEdited(self) -> None:
-        expr = self.zExprLineEdit.text().strip()
+        expr = self._canonicalExpression(self.zExprLineEdit.text().strip())
         if not expr:
             self.zExprStatusLabel.setText("Z expression required.")
             return
@@ -576,7 +614,7 @@ class PlotDefinitionEditor(QWidget):
         for row in self._yRows:
             exprWidget = row["expr"]  # type: ignore[index]
             nameWidget = row["name"]  # type: ignore[index]
-            expr = str(exprWidget.text()).strip()
+            expr = self._canonicalExpression(str(exprWidget.text()).strip())
             if not expr:
                 continue
             name = str(nameWidget.text()).strip()
@@ -599,8 +637,8 @@ class PlotDefinitionEditor(QWidget):
         rowLayout = QHBoxLayout(rowWidget)
         rowLayout.setContentsMargins(0, 0, 0, 0)
         exprEdit = QLineEdit(rowWidget)
-        exprEdit.setPlaceholderText("Expression, e.g. smu:senseCurrentA")
-        exprEdit.setText(expr)
+        exprEdit.setPlaceholderText("Expression, e.g. smu:I_meas")
+        exprEdit.setText(self._displayExpression(expr))
         nameEdit = QLineEdit(rowWidget)
         nameEdit.setPlaceholderText("Name (optional)")
         nameEdit.setText(name)

@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 from genesis.app.user_dirs import genesis_jobs_dir, genesis_runs_dir
 from genesis.core.job.abort_controller import AbortController
 from genesis.core.job.model import JobModel
+from genesis.core.job.variable_names import axisDisplayLabel, jobVariableNicknames
 from genesis.core.instrument.discovery import loadBuiltInInstruments
 from genesis.core.instrument.registry import InstrumentRegistry
 from genesis.core.runtime.expression_eval import (
@@ -508,6 +509,7 @@ class MainWindow(QMainWindow):
         self._refreshControlStates()
 
     def _setupPlotsFromJob(self, jobDefinition: dict[str, Any]) -> None:
+        self._plotVariableNicknames = jobVariableNicknames(jobDefinition)
         self._plotConfigs = list(jobDefinition.get("plots", []))
         for idx, plotDef in enumerate(self._plotConfigs):
             title = str(plotDef.get("title", "")).strip() or f"Plot {idx + 1}"
@@ -519,13 +521,7 @@ class MainWindow(QMainWindow):
                 hyDef = plotDef.get("heatmapY", {})
             ySeriesDefs = self._getYSeriesDefs(plotDef)
 
-            xLabel = (
-                "time" if isinstance(xDef, dict) and xDef.get("type") == "time" else "x"
-            )
-            if isinstance(xDef, dict) and xDef.get("type") == "var":
-                xLabel = f"{xDef.get('instrumentId')}:{xDef.get('key')}"
-            if isinstance(xDef, dict) and xDef.get("type") == "expr":
-                xLabel = str(xDef.get("expr", "")).strip() or "expr"
+            xLabel = axisDisplayLabel(xDef, self._plotVariableNicknames)
 
             yLabel = "Y values"
             ySeriesLabels: list[str] = []
@@ -548,24 +544,8 @@ class MainWindow(QMainWindow):
                     self._compileAxisExpression(idx, f"y:{yIdx}", yDef)
 
             if renderMode == "heatmap":
-                if isinstance(xDef, dict) and xDef.get("type") == "var":
-                    xAxisLabel = f"{xDef.get('instrumentId')}:{xDef.get('key')}"
-                else:
-                    xAxisLabel = (
-                        str(xDef.get("expr", "")).strip()
-                        if isinstance(xDef, dict)
-                        else "x"
-                    )
-                if isinstance(hyDef, dict) and hyDef.get("type") == "var":
-                    yAxisLabel = f"{hyDef.get('instrumentId')}:{hyDef.get('key')}"
-                else:
-                    yAxisLabel = (
-                        str(hyDef.get("expr", "")).strip()
-                        if isinstance(hyDef, dict)
-                        else "y"
-                    )
-                xAxisLabel = xAxisLabel or "x"
-                yAxisLabel = yAxisLabel or "y"
+                xAxisLabel = xLabel
+                yAxisLabel = axisDisplayLabel(hyDef, self._plotVariableNicknames)
                 xBounds = self._sweepBoundsForVarAxis(xDef, jobDefinition)
                 yBounds = self._sweepBoundsForVarAxis(hyDef, jobDefinition)
                 xPointCount = self._sweepPointCountForVarAxis(xDef, jobDefinition)
@@ -579,6 +559,7 @@ class MainWindow(QMainWindow):
                     xPointCount=xPointCount,
                     yPointCount=yPointCount,
                     parent=self.runPlotsContainer,
+                    zLabel=ySeriesLabels[0] if ySeriesLabels else "Values",
                 )
             else:
                 widget = XyPlotWidget(
@@ -1399,15 +1380,10 @@ class MainWindow(QMainWindow):
             # Backward-compat: treat legacy auto names like "Y1" as unnamed.
             if name and not re.fullmatch(r"Y\d+", name):
                 return name
-            if yDef.get("type") == "var":
-                instId = str(yDef.get("instrumentId", "")).strip()
-                key = str(yDef.get("key", "")).strip()
-                if instId and key:
-                    return f"{instId}:{key}"
-            if yDef.get("type") == "expr":
-                expr = str(yDef.get("expr", "")).strip()
-                if expr:
-                    return expr
+            if yDef.get("type") in {"var", "expr"}:
+                return axisDisplayLabel(
+                    yDef, getattr(self, "_plotVariableNicknames", {})
+                )
         return f"Y{yIdx}"
 
     def _emitExpressionError(self, plotIdx: int, axisKey: str, msg: str) -> None:
